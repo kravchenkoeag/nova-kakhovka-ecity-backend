@@ -1,4 +1,4 @@
-// cmd/server/main.go
+ьщшзошо
 package main
 
 import (
