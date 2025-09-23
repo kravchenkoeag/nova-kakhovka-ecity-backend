@@ -1,8 +1,10 @@
-// cmd/server/main.go
+// cmd/server/main.go - Исправленная версия с правильными импортами
+
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -242,10 +244,10 @@ func main() {
 			"timestamp": time.Now().Format(time.RFC3339),
 			"version":   "1.0.0",
 			"services": gin.H{
-				"database":     dbStatus,
-				"websocket":    "running",
+				"database":      dbStatus,
+				"websocket":     "running",
 				"notifications": "active",
-				"transport":    "active",
+				"transport":     "active",
 			},
 			"stats": gin.H{
 				"uptime": time.Since(time.Now().Add(-time.Hour)).String(), // Заглушка
@@ -359,6 +361,3 @@ func main() {
 
 	log.Println("👋 Nova Kakhovka e-City Backend exited")
 }
-
-// Добавляем недостающий импорт
-import "fmt"
