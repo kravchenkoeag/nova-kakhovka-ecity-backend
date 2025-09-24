@@ -319,6 +319,46 @@ func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
 	})
 }
 
+func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
+	notificationID := c.Param("id")
+	notificationIDObj, err := primitive.ObjectIDFromHex(notificationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid notification ID",
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := h.notificationCollection.DeleteOne(ctx, bson.M{
+		"_id":     notificationIDObj,
+		"user_id": userIDObj,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error deleting notification",
+		})
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Notification not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Notification deleted successfully",
+	})
+}
+
 // Админские функции для отправки уведомлений
 func (h *NotificationHandler) SendNotification(c *gin.Context) {
 	var req SendNotificationRequest
@@ -410,46 +450,6 @@ func (h *NotificationHandler) SendEmergencyNotification(c *gin.Context) {
 	})
 }
 
-func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
-	notificationID := c.Param("id")
-	notificationIDObj, err := primitive.ObjectIDFromHex(notificationID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid notification ID",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.notificationCollection.DeleteOne(ctx, bson.M{
-		"_id":     notificationIDObj,
-		"user_id": userIDObj,
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error deleting notification",
-		})
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Notification not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Notification deleted successfully",
-	})
-}
-
 func (h *NotificationHandler) GetNotificationTypes(c *gin.Context) {
 	types := []string{
 		services.NotificationTypeMessage,
@@ -461,5 +461,152 @@ func (h *NotificationHandler) GetNotificationTypes(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"notification_types": types,
+	})
+}
+
+// Дополнительные методы для работы с уведомлениями
+
+func (h *NotificationHandler) GetNotificationStats(c *gin.Context) {
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Статистика по типам уведомлений
+	typePipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":   "$type",
+				"count": bson.M{"$sum": 1},
+				"sent":  bson.M{"$sum": bson.M{"$cond": []interface{}{"$is_sent", 1, 0}}},
+				"read":  bson.M{"$sum": bson.M{"$cond": []interface{}{"$is_read", 1, 0}}},
+			},
+		},
+	}
+
+	typeCursor, err := h.notificationCollection.Aggregate(ctx, typePipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error getting notification stats",
+		})
+		return
+	}
+	defer typeCursor.Close(ctx)
+
+	typeStats := make(map[string]interface{})
+	for typeCursor.Next(ctx) {
+		var result struct {
+			ID    string `bson:"_id"`
+			Count int    `bson:"count"`
+			Sent  int    `bson:"sent"`
+			Read  int    `bson:"read"`
+		}
+		if err := typeCursor.Decode(&result); err != nil {
+			continue
+		}
+		typeStats[result.ID] = gin.H{
+			"total": result.Count,
+			"sent":  result.Sent,
+			"read":  result.Read,
+		}
+	}
+
+	// Общая статистика
+	totalCount, _ := h.notificationCollection.CountDocuments(ctx, bson.M{})
+	sentCount, _ := h.notificationCollection.CountDocuments(ctx, bson.M{"is_sent": true})
+	readCount, _ := h.notificationCollection.CountDocuments(ctx, bson.M{"is_read": true})
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_notifications": totalCount,
+		"sent_notifications":  sentCount,
+		"read_notifications":  readCount,
+		"type_stats":          typeStats,
+		"updated_at":          time.Now(),
+	})
+}
+
+func (h *NotificationHandler) CleanupOldNotifications(c *gin.Context) {
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Удаляем уведомления старше 90 дней
+	cutoffDate := time.Now().AddDate(0, 0, -90)
+
+	result, err := h.notificationCollection.DeleteMany(ctx, bson.M{
+		"created_at": bson.M{"$lt": cutoffDate},
+		"is_read":    true,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error cleaning up notifications",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Old notifications cleaned up successfully",
+		"deleted_count": result.DeletedCount,
+		"cutoff_date":   cutoffDate.Format("2006-01-02"),
+	})
+}
+
+func (h *NotificationHandler) SendTestNotification(c *gin.Context) {
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	data := map[string]interface{}{
+		"type":   "test",
+		"action": "none",
+	}
+
+	err := h.notificationService.SendNotificationToUser(
+		ctx,
+		userIDObj,
+		"Тестовое уведомление",
+		"Это тестовое уведомление для проверки работы системы",
+		services.NotificationTypeSystem,
+		data,
+		nil,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error sending test notification",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Test notification sent successfully",
 	})
 }

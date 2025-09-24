@@ -5,10 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"net/http"
-	"strconv"
 	"time"
 
 	"nova-kakhovka-ecity/internal/config"
@@ -23,16 +20,16 @@ type NotificationService struct {
 	config                 *config.Config
 	userCollection         *mongo.Collection
 	notificationCollection *mongo.Collection
-	httpClient            *http.Client
+	httpClient             *http.Client
 }
 
 type FCMMessage struct {
-	To           string                 `json:"to,omitempty"`
-	RegistrationIDs []string           `json:"registration_ids,omitempty"`
-	Notification FCMNotification       `json:"notification"`
-	Data         map[string]interface{} `json:"data,omitempty"`
-	Priority     string                 `json:"priority"`
-	TimeToLive   int                    `json:"time_to_live,omitempty"`
+	To              string                 `json:"to,omitempty"`
+	RegistrationIDs []string               `json:"registration_ids,omitempty"`
+	Notification    FCMNotification        `json:"notification"`
+	Data            map[string]interface{} `json:"data,omitempty"`
+	Priority        string                 `json:"priority"`
+	TimeToLive      int                    `json:"time_to_live,omitempty"`
 }
 
 type FCMNotification struct {
@@ -44,11 +41,11 @@ type FCMNotification struct {
 }
 
 type FCMResponse struct {
-	MulticastID  int64           `json:"multicast_id"`
-	Success      int             `json:"success"`
-	Failure      int             `json:"failure"`
-	CanonicalIDs int             `json:"canonical_ids"`
-	Results      []FCMResult     `json:"results"`
+	MulticastID  int64       `json:"multicast_id"`
+	Success      int         `json:"success"`
+	Failure      int         `json:"failure"`
+	CanonicalIDs int         `json:"canonical_ids"`
+	Results      []FCMResult `json:"results"`
 }
 
 type FCMResult struct {
@@ -57,30 +54,30 @@ type FCMResult struct {
 	Error          string `json:"error,omitempty"`
 }
 
-// Добавляем поле FCM токена в модель пользователя
+// Модель для токенов устройств
 type UserDeviceToken struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	UserID    primitive.ObjectID `bson:"user_id" json:"user_id"`
-	FCMToken  string            `bson:"fcm_token" json:"fcm_token"`
-	Platform  string            `bson:"platform" json:"platform"` // android, ios, web
-	IsActive  bool              `bson:"is_active" json:"is_active"`
-	CreatedAt time.Time         `bson:"created_at" json:"created_at"`
-	UpdatedAt time.Time         `bson:"updated_at" json:"updated_at"`
+	FCMToken  string             `bson:"fcm_token" json:"fcm_token"`
+	Platform  string             `bson:"platform" json:"platform"` // android, ios, web
+	IsActive  bool               `bson:"is_active" json:"is_active"`
+	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
 }
 
 // Модель для хранения уведомлений в базе
 type StoredNotification struct {
-	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	UserID       primitive.ObjectID `bson:"user_id" json:"user_id"`
-	Title        string            `bson:"title" json:"title"`
-	Body         string            `bson:"body" json:"body"`
-	Type         string            `bson:"type" json:"type"` // message, event, announcement, system
-	RelatedID    *primitive.ObjectID `bson:"related_id,omitempty" json:"related_id,omitempty"`
-	Data         map[string]interface{} `bson:"data,omitempty" json:"data,omitempty"`
-	IsRead       bool              `bson:"is_read" json:"is_read"`
-	IsSent       bool              `bson:"is_sent" json:"is_sent"`
-	CreatedAt    time.Time         `bson:"created_at" json:"created_at"`
-	ReadAt       *time.Time        `bson:"read_at,omitempty" json:"read_at,omitempty"`
+	ID        primitive.ObjectID     `bson:"_id,omitempty" json:"id,omitempty"`
+	UserID    primitive.ObjectID     `bson:"user_id" json:"user_id"`
+	Title     string                 `bson:"title" json:"title"`
+	Body      string                 `bson:"body" json:"body"`
+	Type      string                 `bson:"type" json:"type"` // message, event, announcement, system
+	RelatedID *primitive.ObjectID    `bson:"related_id,omitempty" json:"related_id,omitempty"`
+	Data      map[string]interface{} `bson:"data,omitempty" json:"data,omitempty"`
+	IsRead    bool                   `bson:"is_read" json:"is_read"`
+	IsSent    bool                   `bson:"is_sent" json:"is_sent"`
+	CreatedAt time.Time              `bson:"created_at" json:"created_at"`
+	ReadAt    *time.Time             `bson:"read_at,omitempty" json:"read_at,omitempty"`
 }
 
 const (
@@ -154,6 +151,7 @@ func (ns *NotificationService) SendNotificationToUser(ctx context.Context, userI
 // Отправка уведомления группе пользователей
 func (ns *NotificationService) SendNotificationToUsers(ctx context.Context, userIDs []primitive.ObjectID, title, body, notificationType string, data map[string]interface{}, relatedID *primitive.ObjectID) error {
 	var allTokens []string
+	var notificationIDs []primitive.ObjectID
 
 	// Сохраняем уведомления для всех пользователей
 	for _, userID := range userIDs {
@@ -169,10 +167,12 @@ func (ns *NotificationService) SendNotificationToUsers(ctx context.Context, user
 			CreatedAt: time.Now(),
 		}
 
-		_, err := ns.notificationCollection.InsertOne(ctx, notification)
+		result, err := ns.notificationCollection.InsertOne(ctx, notification)
 		if err != nil {
 			continue // Продолжаем даже если не удалось сохранить одно уведомление
 		}
+
+		notificationIDs = append(notificationIDs, result.InsertedID.(primitive.ObjectID))
 
 		// Получаем токены для каждого пользователя
 		tokens, err := ns.getUserFCMTokens(ctx, userID)
@@ -183,6 +183,10 @@ func (ns *NotificationService) SendNotificationToUsers(ctx context.Context, user
 	}
 
 	if len(allTokens) == 0 {
+		// Помечаем все уведомления как отправленные
+		for _, notificationID := range notificationIDs {
+			ns.markNotificationAsSent(ctx, notificationID)
+		}
 		return nil
 	}
 
@@ -193,14 +197,9 @@ func (ns *NotificationService) SendNotificationToUsers(ctx context.Context, user
 	}
 
 	// Помечаем все уведомления как отправленные
-	ns.notificationCollection.UpdateMany(ctx, bson.M{
-		"user_id": bson.M{"$in": userIDs},
-		"type":    notificationType,
-		"is_sent": false,
-		"created_at": bson.M{"$gte": time.Now().Add(-5 * time.Minute)}, // Последние 5 минут
-	}, bson.M{
-		"$set": bson.M{"is_sent": true},
-	})
+	for _, notificationID := range notificationIDs {
+		ns.markNotificationAsSent(ctx, notificationID)
+	}
 
 	return nil
 }
@@ -224,6 +223,38 @@ func (ns *NotificationService) SendEmergencyNotification(ctx context.Context, ti
 		}
 		userIDs = append(userIDs, user.ID)
 	}
+
+	return ns.SendNotificationToUsers(ctx, userIDs, title, body, NotificationTypeEmergency, data, nil)
+}
+
+// Специализированные методы для разных типов уведомлений
+
+func (ns *NotificationService) SendNewMessageNotification(ctx context.Context, userIDs []primitive.ObjectID, senderName, groupName, messagePreview string, groupID primitive.ObjectID) error {
+	data := map[string]interface{}{
+		"type":        NotificationTypeMessage,
+		"group_id":    groupID.Hex(),
+		"sender_name": senderName,
+		"group_name":  groupName,
+		"action":      "open_chat",
+	}
+
+	title := fmt.Sprintf("Новое сообщение в %s", groupName)
+	body := fmt.Sprintf("%s: %s", senderName, messagePreview)
+
+	return ns.SendNotificationToUsers(ctx, userIDs, title, body, NotificationTypeMessage, data, &groupID)
+}
+
+func (ns *NotificationService) SendEventInviteNotification(ctx context.Context, userIDs []primitive.ObjectID, eventTitle, organizerName string, eventID primitive.ObjectID, eventDate time.Time) error {
+	data := map[string]interface{}{
+		"type":           NotificationTypeEvent,
+		"event_id":       eventID.Hex(),
+		"organizer_name": organizerName,
+		"event_date":     eventDate.Format(time.RFC3339),
+		"action":         "open_event",
+	}
+
+	title := "Приглашение на событие"
+	body := fmt.Sprintf("%s приглашает вас на '%s' %s", organizerName, eventTitle, eventDate.Format("02.01.2006 15:04"))
 
 	return ns.SendNotificationToUsers(ctx, userIDs, title, body, NotificationTypeEvent, data, &eventID)
 }
@@ -259,16 +290,16 @@ func (ns *NotificationService) SendSystemMaintenanceNotification(ctx context.Con
 	body := fmt.Sprintf("Плановые работы %s. %s", maintenanceDate.Format("02.01.2006 15:04"), message)
 
 	// Получаем всех пользователей
-	cursor, err := ns.userCollection.Find(context.Background(), bson.M{
+	cursor, err := ns.userCollection.Find(ctx, bson.M{
 		"is_blocked": false,
 	})
 	if err != nil {
 		return err
 	}
-	defer cursor.Close(context.Background())
+	defer cursor.Close(ctx)
 
 	var userIDs []primitive.ObjectID
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		var user models.User
 		if err := cursor.Decode(&user); err != nil {
 			continue
@@ -279,418 +310,10 @@ func (ns *NotificationService) SendSystemMaintenanceNotification(ctx context.Con
 	return ns.SendNotificationToUsers(ctx, userIDs, title, body, NotificationTypeSystem, data, nil)
 }
 
-// internal/handlers/notification.go
-package handlers
-
-import (
-"context"
-"net/http"
-"strconv"
-"time"
-
-"nova-kakhovka-ecity/internal/services"
-
-"github.com/gin-gonic/gin"
-"go.mongodb.org/mongo-driver/bson"
-"go.mongodb.org/mongo-driver/bson/primitive"
-"go.mongodb.org/mongo-driver/mongo"
-"go.mongodb.org/mongo-driver/mongo/options"
-)
-
-type NotificationHandler struct {
-	notificationService    *services.NotificationService
-	notificationCollection *mongo.Collection
-	deviceTokenCollection  *mongo.Collection
-}
-
-type RegisterDeviceTokenRequest struct {
-	FCMToken string `json:"fcm_token" validate:"required"`
-	Platform string `json:"platform" validate:"required,oneof=android ios web"`
-}
-
-type SendNotificationRequest struct {
-	UserIDs []string               `json:"user_ids" validate:"required"`
-	Title   string                 `json:"title" validate:"required,max=100"`
-	Body    string                 `json:"body" validate:"required,max=500"`
-	Type    string                 `json:"type" validate:"required,oneof=message event announcement system emergency"`
-	Data    map[string]interface{} `json:"data,omitempty"`
-}
-
-func NewNotificationHandler(notificationService *services.NotificationService, notificationCollection, deviceTokenCollection *mongo.Collection) *NotificationHandler {
-	return &NotificationHandler{
-		notificationService:    notificationService,
-		notificationCollection: notificationCollection,
-		deviceTokenCollection:  deviceTokenCollection,
-	}
-}
-
-func (h *NotificationHandler) RegisterDeviceToken(c *gin.Context) {
-	var req RegisterDeviceTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Проверяем, существует ли уже этот токен для пользователя
-	filter := bson.M{
-		"user_id":   userIDObj,
-		"fcm_token": req.FCMToken,
-	}
-
-	var existingToken services.UserDeviceToken
-	err := h.deviceTokenCollection.FindOne(ctx, filter).Decode(&existingToken)
-
-	now := time.Now()
-
-	if err == mongo.ErrNoDocuments {
-		// Токен не существует, создаем новый
-		deviceToken := services.UserDeviceToken{
-			UserID:    userIDObj,
-			FCMToken:  req.FCMToken,
-			Platform:  req.Platform,
-			IsActive:  true,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		_, err := h.deviceTokenCollection.InsertOne(ctx, deviceToken)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Error saving device token",
-			})
-			return
-		}
-	} else if err == nil {
-		// Токен существует, обновляем его
-		_, err := h.deviceTokenCollection.UpdateOne(ctx, filter, bson.M{
-			"$set": bson.M{
-				"is_active":  true,
-				"platform":   req.Platform,
-				"updated_at": now,
-			},
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Error updating device token",
-			})
-			return
-		}
-	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Database error",
-		})
-		return
-	}
-
-	// Деактивируем старые токены того же пользователя и платформы
-	h.deviceTokenCollection.UpdateMany(ctx, bson.M{
-		"user_id":   userIDObj,
-		"platform":  req.Platform,
-		"fcm_token": bson.M{"$ne": req.FCMToken},
-	}, bson.M{
-		"$set": bson.M{
-			"is_active":  false,
-			"updated_at": now,
-		},
-	})
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Device token registered successfully",
-	})
-}
-
-func (h *NotificationHandler) UnregisterDeviceToken(c *gin.Context) {
-	fcmToken := c.Query("fcm_token")
-	if fcmToken == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "FCM token is required",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.deviceTokenCollection.UpdateOne(ctx, bson.M{
-		"user_id":   userIDObj,
-		"fcm_token": fcmToken,
-	}, bson.M{
-		"$set": bson.M{
-			"is_active":  false,
-			"updated_at": time.Now(),
-		},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error unregistering device token",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Device token not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Device token unregistered successfully",
-	})
-}
-
-func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	unreadOnly := c.DefaultQuery("unread_only", "false") == "true"
-
-	if page <= 0 {
-		page = 1
-	}
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	filter := bson.M{"user_id": userIDObj}
-	if unreadOnly {
-		filter["is_read"] = false
-	}
-
-	skip := (page - 1) * limit
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{"created_at", -1}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := h.notificationCollection.Find(ctx, filter, opts)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching notifications",
-		})
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var notifications []services.StoredNotification
-	if err := cursor.All(ctx, &notifications); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error decoding notifications",
-		})
-		return
-	}
-
-	// Получаем количество непрочитанных уведомлений
-	unreadCount, err := h.notificationCollection.CountDocuments(ctx, bson.M{
-		"user_id": userIDObj,
-		"is_read": false,
-	})
-	if err != nil {
-		unreadCount = 0
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"notifications": notifications,
-		"unread_count":  unreadCount,
-		"pagination": gin.H{
-			"page":  page,
-			"limit": limit,
-		},
-	})
-}
-
-func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
-	notificationID := c.Param("id")
-	notificationIDObj, err := primitive.ObjectIDFromHex(notificationID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid notification ID",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	now := time.Now()
-	result, err := h.notificationCollection.UpdateOne(ctx, bson.M{
-		"_id":     notificationIDObj,
-		"user_id": userIDObj,
-	}, bson.M{
-		"$set": bson.M{
-			"is_read": true,
-			"read_at": now,
-		},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error marking notification as read",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Notification not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Notification marked as read",
-	})
-}
-
-func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	now := time.Now()
-	result, err := h.notificationCollection.UpdateMany(ctx, bson.M{
-		"user_id": userIDObj,
-		"is_read": false,
-	}, bson.M{
-		"$set": bson.M{
-			"is_read": true,
-			"read_at": now,
-		},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error marking notifications as read",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":        "All notifications marked as read",
-		"updated_count": result.ModifiedCount,
-	})
-}
-
-// Админские функции для отправки уведомлений
-func (h *NotificationHandler) SendNotification(c *gin.Context) {
-	var req SendNotificationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	// Преобразуем строки в ObjectID
-	var userIDs []primitive.ObjectID
-	for _, userIDStr := range req.UserIDs {
-		userID, err := primitive.ObjectIDFromHex(userIDStr)
-		if err != nil {
-			continue
-		}
-		userIDs = append(userIDs, userID)
-	}
-
-	if len(userIDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "No valid user IDs provided",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := h.notificationService.SendNotificationToUsers(ctx, userIDs, req.Title, req.Body, req.Type, req.Data, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error sending notification",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":    "Notification sent successfully",
-		"user_count": len(userIDs),
-	})
-}
-
-func (h *NotificationHandler) SendEmergencyNotification(c *gin.Context) {
-	var req struct {
-		Title string                 `json:"title" validate:"required,max=100"`
-		Body  string                 `json:"body" validate:"required,max=500"`
-		Data  map[string]interface{} `json:"data,omitempty"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	err := h.notificationService.SendEmergencyNotification(ctx, req.Title, req.Body, req.Data)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error sending emergency notification",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Emergency notification sent to all users",
-	})
-}IDs, title, body, NotificationTypeEmergency, data, nil)
-}
+// Вспомогательные функции
 
 func (ns *NotificationService) getUserFCMTokens(ctx context.Context, userID primitive.ObjectID) ([]string, error) {
-	// Здесь должна быть коллекция device_tokens
+	// Коллекция device_tokens
 	deviceTokenCollection := ns.userCollection.Database().Collection("device_tokens")
 
 	cursor, err := deviceTokenCollection.Find(ctx, bson.M{
@@ -830,34 +453,3 @@ func (ns *NotificationService) markNotificationAsSent(ctx context.Context, notif
 		"$set": bson.M{"is_sent": true},
 	})
 }
-
-// Специализированные методы для разных типов уведомлений
-
-func (ns *NotificationService) SendNewMessageNotification(ctx context.Context, userIDs []primitive.ObjectID, senderName, groupName, messagePreview string, groupID primitive.ObjectID) error {
-	data := map[string]interface{}{
-		"type":           NotificationTypeMessage,
-		"group_id":       groupID.Hex(),
-		"sender_name":    senderName,
-		"group_name":     groupName,
-		"action":         "open_chat",
-	}
-
-	title := fmt.Sprintf("Новое сообщение в %s", groupName)
-	body := fmt.Sprintf("%s: %s", senderName, messagePreview)
-
-	return ns.SendNotificationToUsers(ctx, userIDs, title, body, NotificationTypeMessage, data, &groupID)
-}
-
-func (ns *NotificationService) SendEventInviteNotification(ctx context.Context, userIDs []primitive.ObjectID, eventTitle, organizerName string, eventID primitive.ObjectID, eventDate time.Time) error {
-	data := map[string]interface{}{
-		"type":           NotificationTypeEvent,
-		"event_id":       eventID.Hex(),
-		"organizer_name": organizerName,
-		"event_date":     eventDate.Format(time.RFC3339),
-		"action":         "open_event",
-	}
-
-	title := "Приглашение на событие"
-	body := fmt.Sprintf("%s приглашает вас на '%s' %s", organizerName, eventTitle, eventDate.Format("02.01.2006 15:04"))
-
-	return ns.SendNotificationToUsers(ctx, user
