@@ -23,7 +23,7 @@ func AuthMiddleware(jwtManager *auth.JWTManager) gin.HandlerFunc {
 		// Проверяем формат "Bearer <token>"
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.JSON(http.Status.Unauthorized, gin.H{
+			c.JSON(http.StatusUnauthorized, gin.H{ // Исправлена опечатка здесь
 				"error": "Invalid authorization header format",
 			})
 			c.Abort()
