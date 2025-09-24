@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"nova-kakhovka-ecity/internal/models"
@@ -15,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type PollHandler struct {
@@ -381,6 +383,662 @@ func (h *PollHandler) CreatePoll(c *gin.Context) {
 	poll.ID = result.InsertedID.(primitive.ObjectID)
 
 	c.JSON(http.StatusCreated, poll)
+}
+
+func (h *PollHandler) GetPolls(c *gin.Context) {
+	var filters PollFilters
+	if err := c.ShouldBindQuery(&filters); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid query parameters",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Устанавливаем значения по умолчанию
+	if filters.Page <= 0 {
+		filters.Page = 1
+	}
+	if filters.Limit <= 0 || filters.Limit > 50 {
+		filters.Limit = 20
+	}
+	if filters.SortBy == "" {
+		filters.SortBy = "created_at"
+	}
+	if filters.SortOrder == "" {
+		filters.SortOrder = "desc"
+	}
+
+	// Строим фильтр для запроса
+	filter := bson.M{}
+
+	if filters.IsPublic == nil || *filters.IsPublic {
+		filter["is_public"] = true
+	}
+
+	if filters.Category != "" {
+		filter["category"] = filters.Category
+	}
+	if filters.Status != "" {
+		filter["status"] = filters.Status
+	} else {
+		// По умолчанию показываем активные опросы
+		filter["status"] = models.PollStatusActive
+	}
+
+	if filters.CreatorID != "" {
+		creatorID, err := primitive.ObjectIDFromHex(filters.CreatorID)
+		if err == nil {
+			filter["creator_id"] = creatorID
+		}
+	}
+
+	if !filters.DateFrom.IsZero() || !filters.DateTo.IsZero() {
+		dateFilter := bson.M{}
+		if !filters.DateFrom.IsZero() {
+			dateFilter["$gte"] = filters.DateFrom
+		}
+		if !filters.DateTo.IsZero() {
+			dateFilter["$lte"] = filters.DateTo
+		}
+		filter["created_at"] = dateFilter
+	}
+
+	// Поиск по тексту
+	if filters.Search != "" {
+		filter["$or"] = []bson.M{
+			{"title": bson.M{"$regex": filters.Search, "$options": "i"}},
+			{"description": bson.M{"$regex": filters.Search, "$options": "i"}},
+		}
+	}
+
+	// Настройки сортировки
+	sortOrder := 1
+	if filters.SortOrder == "desc" {
+		sortOrder = -1
+	}
+
+	// Параметры пагинации
+	skip := (filters.Page - 1) * filters.Limit
+	opts := options.Find().
+		SetLimit(int64(filters.Limit)).
+		SetSkip(int64(skip)).
+		SetSort(bson.D{{Key: filters.SortBy, Value: sortOrder}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := h.pollCollection.Find(ctx, filter, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching polls",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var polls []models.Poll
+	if err := cursor.All(ctx, &polls); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding polls",
+		})
+		return
+	}
+
+	// Получаем общее количество для пагинации
+	totalCount, err := h.pollCollection.CountDocuments(ctx, filter)
+	if err != nil {
+		totalCount = 0
+	}
+
+	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
+
+	c.JSON(http.StatusOK, gin.H{
+		"polls": polls,
+		"pagination": gin.H{
+			"page":        filters.Page,
+			"limit":       filters.Limit,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+	})
+}
+
+func (h *PollHandler) GetPoll(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var poll models.Poll
+	err = h.pollCollection.FindOne(ctx, bson.M{
+		"_id":       pollIDObj,
+		"is_public": true,
+	}).Decode(&poll)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Poll not found",
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Database error",
+			})
+		}
+		return
+	}
+
+	// Увеличиваем счетчик просмотров
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		h.pollCollection.UpdateOne(ctx, bson.M{"_id": pollIDObj}, bson.M{
+			"$inc": bson.M{"view_count": 1},
+		})
+	}()
+
+	c.JSON(http.StatusOK, poll)
+}
+
+func (h *PollHandler) SubmitPollResponse(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	var req SubmitPollResponseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Получаем опрос
+	var poll models.Poll
+	err = h.pollCollection.FindOne(ctx, bson.M{
+		"_id":      pollIDObj,
+		"status":   models.PollStatusActive,
+		"end_date": bson.M{"$gt": time.Now()},
+	}).Decode(&poll)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Poll not found or not active",
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Database error",
+			})
+		}
+		return
+	}
+
+	// Проверяем, не отвечал ли пользователь уже
+	if !poll.AllowMultiple && poll.HasUserResponded(userIDObj) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "User has already responded to this poll",
+		})
+		return
+	}
+
+	// Валидация ответов
+	if err := h.validatePollResponse(poll, req.Answers); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Создаем ответ
+	now := time.Now()
+	var pollAnswers []models.PollAnswer
+
+	for _, submitAnswer := range req.Answers {
+		questionID, _ := primitive.ObjectIDFromHex(submitAnswer.QuestionID)
+
+		var optionIDs []primitive.ObjectID
+		for _, optionIDStr := range submitAnswer.OptionIDs {
+			if optionID, err := primitive.ObjectIDFromHex(optionIDStr); err == nil {
+				optionIDs = append(optionIDs, optionID)
+			}
+		}
+
+		pollAnswer := models.PollAnswer{
+			QuestionID:   questionID,
+			OptionIDs:    optionIDs,
+			TextAnswer:   submitAnswer.TextAnswer,
+			NumberAnswer: submitAnswer.NumberAnswer,
+			BoolAnswer:   submitAnswer.BoolAnswer,
+		}
+		pollAnswers = append(pollAnswers, pollAnswer)
+	}
+
+	response := models.PollResponse{
+		ID:          primitive.NewObjectID(),
+		UserID:      userIDObj,
+		Answers:     pollAnswers,
+		SubmittedAt: now,
+		UserAgent:   c.GetHeader("User-Agent"),
+		IPAddress:   c.ClientIP(),
+	}
+
+	// Добавляем ответ в опрос
+	update := bson.M{
+		"$push": bson.M{"responses": response},
+		"$inc":  bson.M{"total_responses": 1},
+		"$set":  bson.M{"updated_at": now},
+	}
+
+	result, err := h.pollCollection.UpdateOne(ctx, bson.M{"_id": pollIDObj}, update)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error submitting poll response",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Poll not found",
+		})
+		return
+	}
+
+	// Пересчитываем результаты в фоновом режиме
+	go h.recalculatePollResults(pollIDObj)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":     "Poll response submitted successfully",
+		"response_id": response.ID.Hex(),
+	})
+}
+
+func (h *PollHandler) GetPollResults(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var poll models.Poll
+	err = h.pollCollection.FindOne(ctx, bson.M{
+		"_id": pollIDObj,
+	}).Decode(&poll)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Poll not found",
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Database error",
+			})
+		}
+		return
+	}
+
+	// Проверяем права доступа к результатам
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+	isModerator, _ := c.Get("is_moderator")
+
+	canViewResults := isModerator.(bool) || poll.CreatorID == userIDObj || poll.Status == models.PollStatusCompleted
+
+	if !canViewResults {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Access denied to poll results",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"poll_id":         poll.ID,
+		"title":           poll.Title,
+		"total_responses": poll.TotalResponses,
+		"results":         poll.Results,
+		"status":          poll.Status,
+	})
+}
+
+func (h *PollHandler) GetUserPolls(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	skip := (page - 1) * limit
+	opts := options.Find().
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip)).
+		SetSort(bson.D{{"created_at", -1}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := h.pollCollection.Find(ctx, bson.M{
+		"creator_id": userIDObj,
+	}, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching user polls",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var polls []models.Poll
+	if err := cursor.All(ctx, &polls); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding polls",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, polls)
+}
+
+func (h *PollHandler) PublishPoll(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	result, err := h.pollCollection.UpdateOne(ctx, bson.M{
+		"_id":    pollIDObj,
+		"status": models.PollStatusDraft,
+	}, bson.M{
+		"$set": bson.M{
+			"status":       models.PollStatusActive,
+			"published_at": now,
+			"updated_at":   now,
+		},
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error publishing poll",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Poll not found or already published",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Poll published successfully",
+	})
+}
+
+func (h *PollHandler) ClosePoll(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	result, err := h.pollCollection.UpdateOne(ctx, bson.M{
+		"_id":    pollIDObj,
+		"status": models.PollStatusActive,
+	}, bson.M{
+		"$set": bson.M{
+			"status":     models.PollStatusCompleted,
+			"end_date":   now,
+			"updated_at": now,
+		},
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error closing poll",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Poll not found or not active",
+		})
+		return
+	}
+
+	// Пересчитываем результаты
+	go h.recalculatePollResults(pollIDObj)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Poll closed successfully",
+	})
+}
+
+func (h *PollHandler) DeletePoll(c *gin.Context) {
+	pollID := c.Param("id")
+	pollIDObj, err := primitive.ObjectIDFromHex(pollID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid poll ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Можно удалить только черновики или завершенные опросы
+	result, err := h.pollCollection.DeleteOne(ctx, bson.M{
+		"_id": pollIDObj,
+		"status": bson.M{"$in": []string{
+			models.PollStatusDraft,
+			models.PollStatusCompleted,
+			models.PollStatusCancelled,
+		}},
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error deleting poll",
+		})
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Poll not found or cannot be deleted (active polls cannot be deleted)",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Poll deleted successfully",
+	})
+}
+
+func (h *PollHandler) GetPollStats(c *gin.Context) {
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Статистика по статусам
+	statusPipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":   "$status",
+				"count": bson.M{"$sum": 1},
+			},
+		},
+	}
+
+	statusCursor, err := h.pollCollection.Aggregate(ctx, statusPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error getting poll stats",
+		})
+		return
+	}
+	defer statusCursor.Close(ctx)
+
+	statusStats := make(map[string]int)
+	for statusCursor.Next(ctx) {
+		var result struct {
+			ID    string `bson:"_id"`
+			Count int    `bson:"count"`
+		}
+		if err := statusCursor.Decode(&result); err != nil {
+			continue
+		}
+		statusStats[result.ID] = result.Count
+	}
+
+	// Статистика по категориям
+	categoryPipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":   "$category",
+				"count": bson.M{"$sum": 1},
+			},
+		},
+	}
+
+	categoryCursor, err := h.pollCollection.Aggregate(ctx, categoryPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error getting category stats",
+		})
+		return
+	}
+	defer categoryCursor.Close(ctx)
+
+	categoryStats := make(map[string]int)
+	for categoryCursor.Next(ctx) {
+		var result struct {
+			ID    string `bson:"_id"`
+			Count int    `bson:"count"`
+		}
+		if err := categoryCursor.Decode(&result); err != nil {
+			continue
+		}
+		categoryStats[result.ID] = result.Count
+	}
+
+	// Статистика ответов
+	responsePipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":               nil,
+				"total_responses":   bson.M{"$sum": "$total_responses"},
+				"average_responses": bson.M{"$avg": "$total_responses"},
+				"max_responses":     bson.M{"$max": "$total_responses"},
+			},
+		},
+	}
+
+	responseCursor, err := h.pollCollection.Aggregate(ctx, responsePipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error getting response stats",
+		})
+		return
+	}
+	defer responseCursor.Close(ctx)
+
+	var responseStats map[string]interface{}
+	if responseCursor.Next(ctx) {
+		responseCursor.Decode(&responseStats)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status_stats":   statusStats,
+		"category_stats": categoryStats,
+		"response_stats": responseStats,
+		"updated_at":     time.Now(),
+	})
 }
 
 func (h *PollHandler) recalculatePollResults(pollID primitive.ObjectID) {
