@@ -1,0 +1,26 @@
+### Health Check
+GET http://localhost:8080/health
+
+### Register
+POST http://localhost:8080/api/v1/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123",
+  "first_name": "Тест",
+  "last_name": "Пользователь"
+}
+
+### Login
+POST http://localhost:8080/api/v1/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+### Get Profile (замените TOKEN после login)
+GET http://localhost:8080/api/v1/profile
+Authorization: Bearer YOUR_TOKEN_HERE
