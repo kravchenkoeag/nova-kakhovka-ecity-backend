@@ -144,8 +144,11 @@ func (hub *Hub) run() {
 	}
 }
 
+// internal/handlers/websocket.go
+// Замінити функцію HandleWebSocket
+
 func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
-	// Получаем JWT токен из query параметра
+	// Отримуємо JWT токен з query параметра
 	token := c.Query("token")
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -154,7 +157,7 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Валидируем токен
+	// Валідуємо токен
 	claims, err := h.jwtManager.ValidateToken(token)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -163,7 +166,7 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Получаем ID группы
+	// Отримуємо ID групи
 	groupID := c.Query("group_id")
 	if groupID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -180,13 +183,23 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Проверяем, является ли пользователь участником группы
+	// ✅ ВИПРАВЛЕННЯ 1: Конвертуємо UserID з string в ObjectID
+	userIDObj, err := primitive.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID in token",
+		})
+		return
+	}
+
+	// Перевіряємо, чи є користувач учасником групи
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// ✅ ВИПРАВЛЕННЯ 2: Використовуємо userIDObj замість claims.UserID
 	count, err := h.groupCollection.CountDocuments(ctx, bson.M{
 		"_id":     groupIDObj,
-		"members": bson.M{"$in": []primitive.ObjectID{claims.UserID}},
+		"members": bson.M{"$in": []primitive.ObjectID{userIDObj}},
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -201,24 +214,25 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Устанавливаем WebSocket соединение
+	// Встановлюємо WebSocket з'єднання
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
 	}
 
+	// ✅ ВИПРАВЛЕННЯ 3: Використовуємо userIDObj замість claims.UserID
 	client := &Client{
 		hub:     h.hub,
 		conn:    conn,
 		send:    make(chan []byte, 256),
-		userID:  claims.UserID,
+		userID:  userIDObj, // Тепер правильний тип: primitive.ObjectID
 		groupID: groupIDObj,
 	}
 
 	client.hub.register <- client
 
-	// Запускаем горутины для чтения и записи
+	// Запускаємо goroutines для читання та запису
 	go client.writePump()
 	go client.readPump(h)
 }

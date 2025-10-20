@@ -1,3 +1,5 @@
+// internal/handlers/auth.go
+
 package handlers
 
 import (
@@ -20,19 +22,21 @@ type AuthHandler struct {
 	jwtManager     *auth.JWTManager
 }
 
+// ✅ Request structures
 type RegisterRequest struct {
-	Email     string `json:"email" validate:"required,email"`
-	Password  string `json:"password" validate:"required,min=6,max=100"`
-	FirstName string `json:"first_name" validate:"required,min=2,max=50"`
-	LastName  string `json:"last_name" validate:"required,min=2,max=50"`
-	Phone     string `json:"phone,omitempty" validate:"omitempty,min=10,max=15"`
+	Email     string `json:"email" binding:"required,email"`
+	Password  string `json:"password" binding:"required,min=6,max=100"`
+	FirstName string `json:"first_name" binding:"required,min=2,max=50"`
+	LastName  string `json:"last_name" binding:"required,min=2,max=50"`
+	Phone     string `json:"phone,omitempty"`
 }
 
 type LoginRequest struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required"`
 }
 
+// ✅ Response structure з правильними JSON tags
 type AuthResponse struct {
 	Token string       `json:"token"`
 	User  *models.User `json:"user"`
@@ -45,6 +49,7 @@ func NewAuthHandler(userCollection *mongo.Collection, jwtManager *auth.JWTManage
 	}
 }
 
+// Register handles user registration
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -55,7 +60,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Проверяем, существует ли пользователь с таким email
+	// Перевіряємо чи існує користувач з таким email
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -73,7 +78,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Хешируем пароль
+	// Хешуємо пароль
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -82,7 +87,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Создаем нового пользователя
+	// Створюємо нового користувача
 	now := time.Now()
 	user := models.User{
 		Email:        req.Email,
@@ -90,11 +95,15 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		PasswordHash: string(hashedPassword),
 		FirstName:    req.FirstName,
 		LastName:     req.LastName,
-		IsVerified:   false,
-		IsModerator:  false,
-		IsBlocked:    false,
-		Groups:       []primitive.ObjectID{},
-		Interests:    []string{},
+
+		// ✅ НОВИЙ КОД: Встановлюємо роль за замовчуванням
+		Role:        string(models.RoleUser), // За замовчуванням USER
+		IsModerator: false,                   // Legacy support
+
+		IsVerified: false,
+		IsBlocked:  false,
+		Groups:     []primitive.ObjectID{},
+		Interests:  []string{},
 		Status: models.UserStatus{
 			Message:   "",
 			IsVisible: false,
@@ -104,7 +113,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		UpdatedAt: now,
 	}
 
-	// Сохраняем пользователя в базу данных
+	// Зберігаємо користувача в базу даних
 	result, err := h.userCollection.InsertOne(ctx, user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -115,8 +124,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	user.ID = result.InsertedID.(primitive.ObjectID)
 
-	// Генерируем JWT токен
-	token, err := h.jwtManager.GenerateToken(user.ID, user.Email, user.IsModerator)
+	// Генеруємо JWT токен
+	// ✅ 4 параметри: userID, email, role, isModerator
+	token, err := h.jwtManager.GenerateToken(
+		user.ID.Hex(),    // userID: string
+		user.Email,       // email: string
+		user.Role,        // role: string
+		user.IsModerator, // isModerator: bool
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error generating token",
@@ -124,15 +139,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Убираем пароль из ответа
-	user.PasswordHash = ""
-
+	// ✅ ПРАВИЛЬНО: Використовуємо структуру AuthResponse
 	c.JSON(http.StatusCreated, AuthResponse{
 		Token: token,
-		User:  &user,
+		User:  &user, // User struct має всі поля включно з Role
 	})
 }
 
+// Login handles user authentication
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -143,26 +157,20 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	// Знаходимо користувача
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Ищем пользователя по email
 	var user models.User
 	err := h.userCollection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid email or password",
-			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
-		}
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Invalid credentials",
+		})
 		return
 	}
 
-	// Проверяем, не заблокирован ли пользователь
+	// Перевіряємо чи користувач заблокований
 	if user.IsBlocked {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "Account is blocked",
@@ -170,30 +178,53 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Проверяем пароль
+	// Перевіряємо пароль
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "Invalid email or password",
+			"error": "Invalid credentials",
 		})
 		return
 	}
 
-	// Обновляем время последнего входа
-	now := time.Now()
-	_, err = h.userCollection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{
-		"$set": bson.M{
-			"last_login_at": now,
-			"updated_at":    now,
-		},
-	})
-	if err != nil {
-		// Логируем ошибку, но не прерываем процесс входа
-		// log.Printf("Error updating last login: %v", err)
+	// ✅ МІГРАЦІЯ: Якщо у користувача немає ролі (legacy users)
+	if user.Role == "" {
+		// Встановлюємо роль на основі is_moderator
+		if user.IsModerator {
+			user.Role = string(models.RoleModerator)
+		} else {
+			user.Role = string(models.RoleUser)
+		}
+
+		// Оновлюємо в базі даних
+		_, err = h.userCollection.UpdateOne(
+			ctx,
+			bson.M{"_id": user.ID},
+			bson.M{"$set": bson.M{"role": user.Role}},
+		)
+		if err != nil {
+			// Логуємо помилку, але не блокуємо login
+			// Користувач все одно зможе увійти
+			println("Warning: Failed to migrate user role:", err.Error())
+		}
 	}
 
-	// Генерируем JWT токен
-	token, err := h.jwtManager.GenerateToken(user.ID, user.Email, user.IsModerator)
+	// Оновлюємо last_login_at
+	now := time.Now()
+	_, err = h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": user.ID},
+		bson.M{"$set": bson.M{"last_login_at": now}},
+	)
+	// Ігноруємо помилку - не критично
+
+	// Генеруємо JWT токен
+	token, err := h.jwtManager.GenerateToken(
+		user.ID.Hex(),
+		user.Email,
+		user.Role,
+		user.IsModerator,
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error generating token",
@@ -201,71 +232,106 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Убираем пароль из ответа
-	user.PasswordHash = ""
-
+	// ✅ ПРАВИЛЬНО: Використовуємо структуру AuthResponse
 	c.JSON(http.StatusOK, AuthResponse{
 		Token: token,
-		User:  &user,
+		User:  &user, // User struct має всі поля включно з Role
 	})
 }
 
+// GetProfile returns current user profile
 func (h *AuthHandler) GetProfile(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	// Отримуємо user_id з JWT claims (встановлюється middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+		})
+		return
+	}
 
+	// Конвертуємо в ObjectID
+	objectID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
+
+	// Знаходимо користувача
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var user models.User
-	err := h.userCollection.FindOne(ctx, bson.M{"_id": userIDObj}).Decode(&user)
+	err = h.userCollection.FindOne(ctx, bson.M{"_id": objectID}).Decode(&user)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
 			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
+			return
 		}
-		return
-	}
-
-	// Убираем пароль из ответа
-	user.PasswordHash = ""
-
-	c.JSON(http.StatusOK, user)
-}
-
-func (h *AuthHandler) UpdateProfile(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	var updateData bson.M
-	if err := c.ShouldBindJSON(&updateData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request data",
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database error",
 		})
 		return
 	}
 
-	// Удаляем поля, которые нельзя обновлять через этот эндпоинт
-	delete(updateData, "_id")
-	delete(updateData, "password_hash")
-	delete(updateData, "email")
-	delete(updateData, "is_verified")
-	delete(updateData, "is_moderator")
-	delete(updateData, "is_blocked")
-	delete(updateData, "created_at")
+	// Повертаємо профіль (без password_hash)
+	c.JSON(http.StatusOK, user)
+}
 
-	// Добавляем временную метку обновления
-	updateData["updated_at"] = time.Now()
+// UpdateProfile updates user profile
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
+	// Отримуємо user_id з JWT
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+		})
+		return
+	}
 
+	objectID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
+
+	// Парсимо request body
+	var updates map[string]interface{}
+	if err := c.ShouldBindJSON(&updates); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Видаляємо поля які не можна оновлювати через цей endpoint
+	delete(updates, "email")
+	delete(updates, "password_hash")
+	delete(updates, "role")
+	delete(updates, "is_moderator")
+	delete(updates, "is_blocked")
+	delete(updates, "is_verified")
+	delete(updates, "_id")
+
+	// Додаємо updated_at
+	updates["updated_at"] = time.Now()
+
+	// Оновлюємо користувача
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := h.userCollection.UpdateOne(ctx, bson.M{"_id": userIDObj}, bson.M{"$set": updateData})
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": objectID},
+		bson.M{"$set": updates},
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error updating profile",
