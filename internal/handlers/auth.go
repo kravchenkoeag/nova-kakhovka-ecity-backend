@@ -172,9 +172,24 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	// Перевіряємо чи користувач заблокований
 	if user.IsBlocked {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Account is blocked",
-		})
+		// Формуємо детальну відповідь для заблокованого користувача
+		response := models.BlockedUserResponse{
+			Error:     "Account is blocked",
+			IsBlocked: true,
+			Message:   "Ваш акаунт заблоковано. Будь ласка, зверніться до модератора для отримання додаткової інформації.",
+		}
+
+		// Додаємо причину блокування, якщо вона є
+		if user.BlockReason != "" {
+			response.BlockReason = user.BlockReason
+		}
+
+		// Додаємо час блокування, якщо він є
+		if user.BlockedAt != nil {
+			response.BlockedAt = *user.BlockedAt
+		}
+
+		c.JSON(http.StatusForbidden, response)
 		return
 	}
 
