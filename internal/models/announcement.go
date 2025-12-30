@@ -36,6 +36,14 @@ type Announcement struct {
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	ExpiresAt time.Time `bson:"expires_at" json:"expires_at"`
+
+	Status          string     `bson:"status" json:"status"` // pending, approved, rejected
+	IsVerified      bool       `bson:"is_verified" json:"is_verified"`
+	ViewCount       int        `bson:"view_count" json:"view_count"`
+	ResponseCount   int        `bson:"response_count" json:"response_count"`
+	ApprovedAt      *time.Time `bson:"approved_at,omitempty" json:"approved_at,omitempty"`
+	RejectedAt      *time.Time `bson:"rejected_at,omitempty" json:"rejected_at,omitempty"`
+	RejectionReason string     `bson:"rejection_reason,omitempty" json:"rejection_reason,omitempty"`
 }
 
 type ContactInfo struct {

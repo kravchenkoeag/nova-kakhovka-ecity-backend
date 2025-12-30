@@ -35,6 +35,7 @@ type Poll struct {
 	// Статистика и результаты
 	TotalResponses int            `bson:"total_responses" json:"total_responses"`
 	Responses      []PollResponse `bson:"responses" json:"responses"`
+	ResponseCount  int            `bson:"response_count" json:"response_count"`
 	Results        PollResults    `bson:"results" json:"results"`
 
 	// Статус и модерация
@@ -70,8 +71,11 @@ type PollOption struct {
 
 type PollResponse struct {
 	ID          primitive.ObjectID `bson:"id" json:"id"`
+	PollID      primitive.ObjectID `bson:"poll_id" json:"poll_id"`
 	UserID      primitive.ObjectID `bson:"user_id" json:"user_id"`
 	Answers     []PollAnswer       `bson:"answers" json:"answers"`
+	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time          `bson:"updated_at" json:"updated_at"`
 	SubmittedAt time.Time          `bson:"submitted_at" json:"submitted_at"`
 	UserAgent   string             `bson:"user_agent,omitempty" json:"user_agent,omitempty"`
 	IPAddress   string             `bson:"ip_address,omitempty" json:"ip_address,omitempty"`
@@ -122,6 +126,13 @@ type Demographics struct {
 type AgeRestriction struct {
 	MinAge int `bson:"min_age" json:"min_age" validate:"min=0,max=120"`
 	MaxAge int `bson:"max_age" json:"max_age" validate:"min=0,max=120"`
+}
+
+type Answer struct {
+	QuestionID      primitive.ObjectID   `bson:"question_id" json:"question_id"`
+	SelectedOptions []primitive.ObjectID `bson:"selected_options,omitempty" json:"selected_options,omitempty"`
+	TextAnswer      string               `bson:"text_answer,omitempty" json:"text_answer,omitempty"` // ← ЗМІНЕНО з *string на string
+	Rating          *int                 `bson:"rating,omitempty" json:"rating,omitempty"`
 }
 
 // Статусы опросов

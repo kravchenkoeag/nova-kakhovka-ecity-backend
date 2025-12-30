@@ -12,6 +12,8 @@ type Group struct {
 	Description string             `bson:"description" json:"description" validate:"max=500"`
 	Type        string             `bson:"type" json:"type" validate:"required,oneof=country region city interest"`
 
+	CreatorID primitive.ObjectID `bson:"creator_id" json:"creator_id"`
+
 	// Фильтры для автодобавления
 	LocationFilter string   `bson:"location_filter" json:"location_filter"`
 	InterestFilter []string `bson:"interest_filter" json:"interest_filter"`
@@ -29,6 +31,8 @@ type Group struct {
 	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
 	CreatedBy primitive.ObjectID `bson:"created_by" json:"created_by"`
+
+	MemberCount int `bson:"member_count" json:"member_count"`
 }
 
 // Типы групп

@@ -145,19 +145,19 @@ func (h *TransportHandler) CreateRoute(c *gin.Context) {
 
 	now := time.Now()
 	route := models.TransportRoute{
-		Number:      req.Number,
-		Type:        req.Type,
-		Name:        req.Name,
-		Description: req.Description,
-		Color:       req.Color,
-		Stops:       req.Stops,
-		RoutePoints: req.RoutePoints,
-		Schedule:    req.Schedule,
-		IsActive:    req.IsActive,
-		Fare:        req.Fare,
-		CreatedBy:   userIDObj,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		RouteNumber:   req.Number,
+		TransportType: req.Type,
+		RouteName:     req.Name,
+		Description:   req.Description,
+		Color:         req.Color,
+		Stops:         req.Stops,
+		RoutePoints:   req.RoutePoints,
+		Schedule:      req.Schedule,
+		IsActive:      req.IsActive,
+		Fare:          req.Fare,
+		CreatedBy:     userIDObj,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	// Вычисляем общую длину маршрута
@@ -525,13 +525,13 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 	vehicle := models.TransportVehicle{
 		RouteID:           routeID,
 		VehicleNumber:     req.VehicleNumber,
-		Type:              req.Type,
+		TransportType:     req.Type,
 		Model:             req.Model,
 		Capacity:          req.Capacity,
 		CurrentLocation:   req.CurrentLocation,
 		IsActive:          req.IsActive,
 		IsOnline:          false,
-		LastUpdateTime:    now,
+		LastUpdate:        now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		HasAirConditioner: req.HasAirConditioner,
@@ -823,7 +823,7 @@ func (h *TransportHandler) GetLiveVehicles(c *gin.Context) {
 		var route models.TransportRoute
 		if err := h.routeCollection.FindOne(ctx, bson.M{"_id": vehicles[i].RouteID}).Decode(&route); err == nil {
 			// Добавляем информацию о маршруте для отображения на карте
-			vehicles[i].RouteNumber = route.Number
+			vehicles[i].RouteNumber = route.RouteNumber
 		}
 	}
 
@@ -876,8 +876,8 @@ func (h *TransportHandler) GetRouteSchedule(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"route_number": route.Number,
-		"route_name":   route.Name,
+		"route_number": route.RouteNumber,
+		"route_name":   route.RouteName,
 		"day_type":     dayType,
 		"stop":         stopName,
 		"schedule":     filteredSchedule,
@@ -1194,9 +1194,9 @@ func (h *TransportHandler) GetArrivals(c *gin.Context) {
 			nextArrivalTime := now.Add(time.Duration(5+stopIndex*3) * time.Minute) // Примітивний розрахунок
 
 			arrivals = append(arrivals, gin.H{
-				"route_number":   route.Number,
-				"route_name":     route.Name,
-				"route_type":     route.Type,
+				"route_number":   route.RouteNumber,
+				"route_name":     route.RouteName,
+				"route_type":     route.TransportType,
 				"vehicle_number": vehicle.VehicleNumber,
 				"estimated_time": nextArrivalTime,
 				"minutes_away":   int(nextArrivalTime.Sub(now).Minutes()),
@@ -1313,10 +1313,10 @@ func (h *TransportHandler) GetLiveTracking(c *gin.Context) {
 		liveVehicle := LiveVehicle{
 			VehicleID:     vehicle.ID,
 			VehicleNumber: vehicle.VehicleNumber,
-			Type:          vehicle.Type,
+			Type:          vehicle.TransportType,
 			RouteID:       vehicle.RouteID,
-			RouteNumber:   route.Number,
-			RouteName:     route.Name,
+			RouteNumber:   route.RouteNumber,
+			RouteName:     route.RouteName,
 			Location:      vehicle.CurrentLocation,
 			Speed:         vehicle.Speed,
 			Heading:       vehicle.Heading,

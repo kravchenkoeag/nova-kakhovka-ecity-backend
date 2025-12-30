@@ -66,6 +66,11 @@ type Event struct {
 
 	// Теги для поиска
 	Tags []string `bson:"tags,omitempty" json:"tags,omitempty"`
+
+	Attendees        []primitive.ObjectID `bson:"attendees" json:"attendees"`
+	AttendeeCount    int                  `bson:"attendee_count" json:"attendee_count"`
+	ModerationReason string               `bson:"moderation_reason,omitempty" json:"moderation_reason,omitempty"`
+	ModeratedAt      *time.Time           `bson:"moderated_at,omitempty" json:"moderated_at,omitempty"`
 }
 
 // Категории событий

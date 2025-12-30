@@ -12,6 +12,10 @@ type TransportRoute struct {
 	RouteNumber   string             `bson:"route_number" json:"route_number" validate:"required"`
 	RouteName     string             `bson:"route_name" json:"route_name" validate:"required,min=5,max=200"`
 	TransportType string             `bson:"transport_type" json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
+	RoutePoints   []Location         `bson:"route_points" json:"route_points"`
+
+	Color       string `bson:"color,omitempty" json:"color,omitempty"`
+	Description string `bson:"description,omitempty" json:"description,omitempty"`
 
 	// Маршрут и остановки
 	Stops         []TransportStop `bson:"stops" json:"stops" validate:"required,min=2"`
@@ -19,9 +23,9 @@ type TransportRoute struct {
 	TotalDistance float64         `bson:"total_distance" json:"total_distance"` // Общая длина маршрута в км
 
 	// Расписание
-	Schedule       TransportSchedule `bson:"schedule" json:"schedule"`
-	FirstDeparture time.Time         `bson:"first_departure" json:"first_departure"`
-	LastDeparture  time.Time         `bson:"last_departure" json:"last_departure"`
+	Schedule       []TransportSchedule `bson:"schedule" json:"schedule"`
+	FirstDeparture time.Time           `bson:"first_departure" json:"first_departure"`
+	LastDeparture  time.Time           `bson:"last_departure" json:"last_departure"`
 
 	// Стоимость и характеристики
 	Fare         float64 `bson:"fare" json:"fare"`                   // Стоимость проезда
@@ -50,10 +54,11 @@ type TransportStop struct {
 }
 
 type TransportSchedule struct {
-	Weekdays []ScheduleInterval `bson:"weekdays" json:"weekdays"` // Пн-Пт
-	Saturday []ScheduleInterval `bson:"saturday" json:"saturday"` // Суббота
-	Sunday   []ScheduleInterval `bson:"sunday" json:"sunday"`     // Воскресенье
-	Holidays []ScheduleInterval `bson:"holidays" json:"holidays"` // Праздничные дни
+	DayType       string             `bson:"day_type" json:"day_type"` // ← weekday, saturday, sunday
+	StopName      string             `bson:"stop_name" json:"stop_name"`
+	StopID        primitive.ObjectID `bson:"stop_id" json:"stop_id"`
+	ArrivalTime   string             `bson:"arrival_time" json:"arrival_time"`     // "HH:MM"
+	DepartureTime string             `bson:"departure_time" json:"departure_time"` // "HH:MM"
 }
 
 type ScheduleInterval struct {
@@ -68,19 +73,23 @@ type TransportVehicle struct {
 	RouteID       primitive.ObjectID `bson:"route_id" json:"route_id" validate:"required"`
 
 	// Характеристики транспорта
-	TransportType string `bson:"transport_type" json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
-	Model         string `bson:"model" json:"model"`
-	Capacity      int    `bson:"capacity" json:"capacity"` // Вместимость пассажиров
-	IsAccessible  bool   `bson:"is_accessible" json:"is_accessible"`
-	HasWiFi       bool   `bson:"has_wifi" json:"has_wifi"`
-	HasAC         bool   `bson:"has_ac" json:"has_ac"`
+	TransportType     string `bson:"transport_type" json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
+	Model             string `bson:"model" json:"model"`
+	Capacity          int    `bson:"capacity" json:"capacity"` // Вместимость пассажиров
+	IsAccessible      bool   `bson:"is_accessible" json:"is_accessible"`
+	HasWiFi           bool   `bson:"has_wifi" json:"has_wifi"`
+	HasAC             bool   `bson:"has_ac" json:"has_ac"`
+	HasAirConditioner bool   `bson:"has_air_conditioner" json:"has_air_conditioner"`
 
 	// Текущее состояние (только для активных транспортов с GPS)
-	CurrentLocation *Location           `bson:"current_location,omitempty" json:"current_location,omitempty"`
+	CurrentLocation Location            `bson:"current_location,omitempty" json:"current_location,omitempty"`
 	CurrentStopID   *primitive.ObjectID `bson:"current_stop_id,omitempty" json:"current_stop_id,omitempty"`
 	Direction       string              `bson:"direction,omitempty" json:"direction,omitempty"` // forward, backward
 	Speed           float64             `bson:"speed,omitempty" json:"speed,omitempty"`         // км/ч
+	IsActive        bool                `bson:"is_active" json:"is_active"`
 	LastUpdate      *time.Time          `bson:"last_update,omitempty" json:"last_update,omitempty"`
+
+	Heading float64 `bson:"heading,omitempty" json:"heading,omitempty"`
 
 	// Статус
 	Status    string              `bson:"status" json:"status"`         // active, maintenance, out_of_service
@@ -89,6 +98,9 @@ type TransportVehicle struct {
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+
+	// ← ДОДАНО для зручності у response (не зберігається в DB):
+	RouteNumber string `bson:"-" json:"route_number,omitempty"`
 }
 
 type TransportArrival struct {
