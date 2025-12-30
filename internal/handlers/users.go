@@ -349,6 +349,343 @@ func (h *UsersHandler) BlockUser(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// GetUser повертає детальну інформацію про користувача
+func (h *UsersHandler) GetUser(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var user models.User
+	err = h.userCollection.FindOne(
+		ctx,
+		bson.M{"_id": userID},
+		options.FindOne().SetProjection(bson.M{"password_hash": 0}),
+	).Decode(&user)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error fetching user",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
+// UpdateUser оновлює інформацію про користувача
+func (h *UsersHandler) UpdateUser(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type UpdateUserRequest struct {
+		FullName    string `json:"full_name,omitempty"`
+		Phone       string `json:"phone,omitempty"`
+		DateOfBirth string `json:"date_of_birth,omitempty"`
+		Gender      string `json:"gender,omitempty"`
+		Address     string `json:"address,omitempty"`
+	}
+
+	var req UpdateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач існує
+	var existingUser models.User
+	err = h.userCollection.FindOne(ctx, bson.M{"_id": userID}).Decode(&existingUser)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching user",
+		})
+		return
+	}
+
+	// Формуємо оновлення
+	update := bson.M{
+		"updated_at": time.Now(),
+	}
+
+	if req.FullName != "" {
+		update["full_name"] = req.FullName
+	}
+	if req.Phone != "" {
+		update["phone"] = req.Phone
+	}
+	if req.DateOfBirth != "" {
+		update["date_of_birth"] = req.DateOfBirth
+	}
+	if req.Gender != "" {
+		update["gender"] = req.Gender
+	}
+	if req.Address != "" {
+		update["address"] = req.Address
+	}
+
+	// Оновлюємо користувача
+	_, err = h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error updating user",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User updated successfully",
+	})
+}
+
+// DeleteUser видаляє користувача (м'яке видалення)
+func (h *UsersHandler) DeleteUser(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач існує
+	var user models.User
+	err = h.userCollection.FindOne(ctx, bson.M{"_id": userID}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching user",
+		})
+		return
+	}
+
+	// М'яке видалення - встановлюємо прапорець is_deleted
+	// Альтернативно можна використовувати DeleteOne для повного видалення
+	_, err = h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"is_deleted": true,
+				"deleted_at": time.Now(),
+				"is_blocked": true, // Також блокуємо
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error deleting user",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User deleted successfully",
+	})
+}
+
+// ========================================
+// УПРАВЛІННЯ СТАТУСОМ КОРИСТУВАЧА
+// ========================================
+
+// UnblockUser розблоковує користувача
+func (h *UsersHandler) UnblockUser(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Розблоковуємо користувача
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"is_blocked":   false,
+				"block_reason": "",
+				"blocked_at":   nil,
+				"updated_at":   time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error unblocking user",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User unblocked successfully",
+	})
+}
+
+// VerifyUser верифікує користувача
+func (h *UsersHandler) VerifyUser(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Верифікуємо користувача
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"is_verified": true,
+				"verified_at": time.Now(),
+				"updated_at":  time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error verifying user",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User verified successfully",
+	})
+}
+
+// UpdateUserRole оновлює роль користувача
+func (h *UsersHandler) UpdateUserRole(c *gin.Context) {
+	userID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid user ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type UpdateRoleRequest struct {
+		Role string `json:"role" binding:"required,oneof=USER MODERATOR ADMIN"`
+	}
+
+	var req UpdateRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid role",
+			"details": "Role must be USER, MODERATOR, or ADMIN",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Оновлюємо роль
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"role":       req.Role,
+				"updated_at": time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error updating role",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User role updated successfully",
+		"role":    req.Role,
+	})
+}
+
 // GetUserStats отримує статистику користувачів
 // 🔒 Вимагає права: Permission.VIEW_ANALYTICS або Permission.USERS_MANAGE
 // Метод: GET /api/v1/users/stats
@@ -357,78 +694,58 @@ func (h *UsersHandler) GetUserStats(c *gin.Context) {
 	defer cancel()
 
 	// Загальна кількість користувачів
-	total, err := h.userCollection.CountDocuments(ctx, bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get total users",
-		})
-		return
-	}
-
-	// Активні користувачі (не заблоковані)
-	active, err := h.userCollection.CountDocuments(ctx, bson.M{"is_blocked": false})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get active users",
-		})
-		return
-	}
-
-	// Заблоковані користувачі
-	blocked, err := h.userCollection.CountDocuments(ctx, bson.M{"is_blocked": true})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get blocked users",
-		})
-		return
-	}
+	totalUsers, _ := h.userCollection.CountDocuments(ctx, bson.M{})
 
 	// Верифіковані користувачі
-	verified, err := h.userCollection.CountDocuments(ctx, bson.M{"is_verified": true})
+	verifiedUsers, _ := h.userCollection.CountDocuments(ctx, bson.M{"is_verified": true})
+
+	// Заблоковані користувачі
+	blockedUsers, _ := h.userCollection.CountDocuments(ctx, bson.M{"is_blocked": true})
+
+	// Користувачі за ролями
+	pipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$role",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+
+	cursor, err := h.userCollection.Aggregate(ctx, pipeline)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get verified users",
+			"error": "Error fetching role statistics",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var roleStats []bson.M
+	if err := cursor.All(ctx, &roleStats); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding statistics",
 		})
 		return
 	}
 
-	// Модератори
-	moderators, err := h.userCollection.CountDocuments(ctx, bson.M{
-		"role": bson.M{"$in": []string{
-			string(models.RoleModerator),
-		}},
+	// Нові користувачі за останній місяць
+	oneMonthAgo := time.Now().AddDate(0, -1, 0)
+	newUsersLastMonth, _ := h.userCollection.CountDocuments(ctx, bson.M{
+		"created_at": bson.M{"$gte": oneMonthAgo},
 	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get moderators",
-		})
-		return
-	}
 
-	// Адміністратори (ADMIN + SUPER_ADMIN)
-	admins, err := h.userCollection.CountDocuments(ctx, bson.M{
-		"role": bson.M{"$in": []string{
-			string(models.RoleAdmin),
-			string(models.RoleSuperAdmin),
-		}},
+	// Нові користувачі за останній тиждень
+	oneWeekAgo := time.Now().AddDate(0, 0, -7)
+	newUsersLastWeek, _ := h.userCollection.CountDocuments(ctx, bson.M{
+		"created_at": bson.M{"$gte": oneWeekAgo},
 	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get admins",
-		})
-		return
-	}
 
-	response := UserStatsResponse{
-		Data: UserStatsData{
-			Total:         total,
-			Active:        active,
-			Blocked:       blocked,
-			Admins:        admins,
-			VerifiedUsers: verified,
-			Moderators:    moderators,
-		},
-	}
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, gin.H{
+		"total_users":          totalUsers,
+		"verified_users":       verifiedUsers,
+		"blocked_users":        blockedUsers,
+		"users_by_role":        roleStats,
+		"new_users_last_month": newUsersLastMonth,
+		"new_users_last_week":  newUsersLastWeek,
+		"timestamp":            time.Now(),
+	})
 }

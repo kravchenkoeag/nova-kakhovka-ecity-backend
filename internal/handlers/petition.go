@@ -855,3 +855,70 @@ func (h *PetitionHandler) notifyAuthorAboutResponse(petitionID primitive.ObjectI
 		&petitionID,
 	)
 }
+
+// UpdatePetition - оновлення петиції (автором або модератором)
+func (h *PetitionHandler) UpdatePetition(c *gin.Context) {
+	petitionID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid petition ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type UpdatePetitionRequest struct {
+		Status   string `json:"status,omitempty" binding:"omitempty,oneof=open closed under_review approved rejected"`
+		Response string `json:"response,omitempty"` // Офіційна відповідь
+	}
+
+	var req UpdatePetitionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Формуємо оновлення
+	update := bson.M{
+		"updated_at": time.Now(),
+	}
+
+	if req.Status != "" {
+		update["status"] = req.Status
+	}
+
+	if req.Response != "" {
+		update["official_response"] = req.Response
+		update["response_date"] = time.Now()
+	}
+
+	// Оновлюємо петицію
+	result, err := h.petitionCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": petitionID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating petition",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Petition not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Petition updated successfully",
+	})
+}

@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"nova-kakhovka-ecity/internal/models"
 	"strconv"
 	"time"
 
@@ -47,134 +48,6 @@ func NewNotificationHandler(notificationService *services.NotificationService, n
 		notificationCollection: notificationCollection,
 		deviceTokenCollection:  deviceTokenCollection,
 	}
-}
-
-func (h *NotificationHandler) RegisterDeviceToken(c *gin.Context) {
-	var req RegisterDeviceTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Проверяем, существует ли уже этот токен для пользователя
-	filter := bson.M{
-		"user_id":   userIDObj,
-		"fcm_token": req.FCMToken,
-	}
-
-	var existingToken services.UserDeviceToken
-	err := h.deviceTokenCollection.FindOne(ctx, filter).Decode(&existingToken)
-
-	now := time.Now()
-
-	if err == mongo.ErrNoDocuments {
-		// Токен не существует, создаем новый
-		deviceToken := services.UserDeviceToken{
-			UserID:    userIDObj,
-			FCMToken:  req.FCMToken,
-			Platform:  req.Platform,
-			IsActive:  true,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		_, err := h.deviceTokenCollection.InsertOne(ctx, deviceToken)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Error saving device token",
-			})
-			return
-		}
-	} else if err == nil {
-		// Токен существует, обновляем его
-		_, err := h.deviceTokenCollection.UpdateOne(ctx, filter, bson.M{
-			"$set": bson.M{
-				"is_active":  true,
-				"platform":   req.Platform,
-				"updated_at": now,
-			},
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Error updating device token",
-			})
-			return
-		}
-	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Database error",
-		})
-		return
-	}
-
-	// Деактивируем старые токены того же пользователя и платформы
-	h.deviceTokenCollection.UpdateMany(ctx, bson.M{
-		"user_id":   userIDObj,
-		"platform":  req.Platform,
-		"fcm_token": bson.M{"$ne": req.FCMToken},
-	}, bson.M{
-		"$set": bson.M{
-			"is_active":  false,
-			"updated_at": now,
-		},
-	})
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Device token registered successfully",
-	})
-}
-
-func (h *NotificationHandler) UnregisterDeviceToken(c *gin.Context) {
-	fcmToken := c.Query("fcm_token")
-	if fcmToken == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "FCM token is required",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.deviceTokenCollection.UpdateOne(ctx, bson.M{
-		"user_id":   userIDObj,
-		"fcm_token": fcmToken,
-	}, bson.M{
-		"$set": bson.M{
-			"is_active":  false,
-			"updated_at": time.Now(),
-		},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error unregistering device token",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Device token not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Device token unregistered successfully",
-	})
 }
 
 func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
@@ -316,46 +189,6 @@ func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":       "All notifications marked as read",
 		"updated_count": result.ModifiedCount,
-	})
-}
-
-func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
-	notificationID := c.Param("id")
-	notificationIDObj, err := primitive.ObjectIDFromHex(notificationID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid notification ID",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.notificationCollection.DeleteOne(ctx, bson.M{
-		"_id":     notificationIDObj,
-		"user_id": userIDObj,
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error deleting notification",
-		})
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Notification not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Notification deleted successfully",
 	})
 }
 
@@ -608,5 +441,566 @@ func (h *NotificationHandler) SendTestNotification(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Test notification sent successfully",
+	})
+}
+
+// GetNotifications повертає список сповіщень користувача
+func (h *NotificationHandler) GetNotifications(c *gin.Context) {
+	// Отримуємо ID користувача з контексту
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	// Параметри запиту
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	unreadOnly := c.Query("unread_only") == "true"
+	notificationType := c.Query("type")
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Побудова фільтра
+	filter := bson.M{
+		"user_id": userIDObj,
+	}
+
+	if unreadOnly {
+		filter["is_read"] = false
+	}
+
+	if notificationType != "" {
+		filter["type"] = notificationType
+	}
+
+	// Підрахунок загальної кількості
+	total, err := h.notificationCollection.CountDocuments(ctx, filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error counting notifications",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Підрахунок непрочитаних
+	unreadCount, _ := h.notificationCollection.CountDocuments(ctx, bson.M{
+		"user_id": userIDObj,
+		"is_read": false,
+	})
+
+	// Пагінація
+	skip := (page - 1) * limit
+	findOptions := options.Find()
+	findOptions.SetLimit(int64(limit))
+	findOptions.SetSkip(int64(skip))
+	findOptions.SetSort(bson.D{{Key: "created_at", Value: -1}}) // Нові спочатку
+
+	// Виконання запиту
+	cursor, err := h.notificationCollection.Find(ctx, filter, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error fetching notifications",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var notifications []models.Notification
+	if err := cursor.All(ctx, &notifications); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error decoding notifications",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"notifications": notifications,
+		"unread_count":  unreadCount,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
+}
+
+// MarkAsRead позначає сповіщення як прочитане
+func (h *NotificationHandler) MarkAsRead(c *gin.Context) {
+	notificationID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid notification ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Оновлюємо тільки якщо сповіщення належить користувачу
+	result, err := h.notificationCollection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":     notificationID,
+			"user_id": userIDObj,
+		},
+		bson.M{
+			"$set": bson.M{
+				"is_read": true,
+				"read_at": time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error marking notification as read",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Notification not found or access denied",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Notification marked as read",
+	})
+}
+
+// MarkAllAsRead позначає всі сповіщення користувача як прочитані
+func (h *NotificationHandler) MarkAllAsRead(c *gin.Context) {
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Оновлюємо всі непрочитані сповіщення користувача
+	result, err := h.notificationCollection.UpdateMany(
+		ctx,
+		bson.M{
+			"user_id": userIDObj,
+			"is_read": false,
+		},
+		bson.M{
+			"$set": bson.M{
+				"is_read": true,
+				"read_at": time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error marking notifications as read",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "All notifications marked as read",
+		"updated_count": result.ModifiedCount,
+		"matched_count": result.MatchedCount,
+	})
+}
+
+// DeleteNotification видаляє сповіщення
+func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
+	notificationID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid notification ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Видаляємо тільки якщо сповіщення належить користувачу
+	result, err := h.notificationCollection.DeleteOne(
+		ctx,
+		bson.M{
+			"_id":     notificationID,
+			"user_id": userIDObj,
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error deleting notification",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Notification not found or access denied",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Notification deleted successfully",
+	})
+}
+
+// ========================================
+// УПРАВЛІННЯ DEVICE TOKENS (Push Notifications)
+// ========================================
+
+// RegisterDeviceToken реєструє device token для push-сповіщень
+func (h *NotificationHandler) RegisterDeviceToken(c *gin.Context) {
+	type RegisterTokenRequest struct {
+		Token    string `json:"token" binding:"required"`
+		Platform string `json:"platform" binding:"required,oneof=ios android web"`
+		DeviceID string `json:"device_id"`
+	}
+
+	var req RegisterTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи токен вже існує
+	var existingToken bson.M
+	err := h.deviceTokenCollection.FindOne(ctx, bson.M{
+		"user_id": userIDObj,
+		"token":   req.Token,
+	}).Decode(&existingToken)
+
+	if err == mongo.ErrNoDocuments {
+		// Створюємо новий токен
+		deviceToken := bson.M{
+			"user_id":    userIDObj,
+			"token":      req.Token,
+			"platform":   req.Platform,
+			"device_id":  req.DeviceID,
+			"is_active":  true,
+			"created_at": time.Now(),
+			"updated_at": time.Now(),
+		}
+
+		_, err := h.deviceTokenCollection.InsertOne(ctx, deviceToken)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Error registering device token",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message": "Device token registered successfully",
+		})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error checking device token",
+		})
+		return
+	}
+
+	// Токен вже існує - оновлюємо
+	_, err = h.deviceTokenCollection.UpdateOne(
+		ctx,
+		bson.M{
+			"user_id": userIDObj,
+			"token":   req.Token,
+		},
+		bson.M{
+			"$set": bson.M{
+				"is_active":  true,
+				"platform":   req.Platform,
+				"device_id":  req.DeviceID,
+				"updated_at": time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating device token",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Device token updated successfully",
+	})
+}
+
+// UnregisterDeviceToken видаляє device token
+func (h *NotificationHandler) UnregisterDeviceToken(c *gin.Context) {
+	token := c.Param("token")
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Token is required",
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Видаляємо або деактивуємо токен
+	result, err := h.deviceTokenCollection.UpdateOne(
+		ctx,
+		bson.M{
+			"user_id": userIDObj,
+			"token":   token,
+		},
+		bson.M{
+			"$set": bson.M{
+				"is_active":  false,
+				"updated_at": time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error unregistering device token",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Device token not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Device token unregistered successfully",
+	})
+}
+
+// ========================================
+// НАЛАШТУВАННЯ СПОВІЩЕНЬ
+// ========================================
+
+// GetPreferences повертає налаштування сповіщень користувача
+func (h *NotificationHandler) GetPreferences(c *gin.Context) {
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Отримуємо користувача з налаштуваннями
+	var user models.User
+	err := h.userCollection.FindOne(ctx, bson.M{"_id": userIDObj}).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching preferences",
+		})
+		return
+	}
+
+	// Якщо налаштування не задані, повертаємо дефолтні
+	preferences := user.NotificationPreferences
+	if preferences == nil {
+		preferences = &models.NotificationPreferences{
+			Email:         true,
+			Push:          true,
+			SMS:           false,
+			InApp:         true,
+			Announcements: true,
+			Events:        true,
+			CityIssues:    true,
+			Polls:         true,
+			Petitions:     true,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"preferences": preferences,
+	})
+}
+
+// UpdatePreferences оновлює налаштування сповіщень користувача
+func (h *NotificationHandler) UpdatePreferences(c *gin.Context) {
+	type PreferencesRequest struct {
+		Email         *bool `json:"email,omitempty"`
+		Push          *bool `json:"push,omitempty"`
+		SMS           *bool `json:"sms,omitempty"`
+		InApp         *bool `json:"in_app,omitempty"`
+		Announcements *bool `json:"announcements,omitempty"`
+		Events        *bool `json:"events,omitempty"`
+		CityIssues    *bool `json:"city_issues,omitempty"`
+		Polls         *bool `json:"polls,omitempty"`
+		Petitions     *bool `json:"petitions,omitempty"`
+	}
+
+	var req PreferencesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Формуємо оновлення
+	update := bson.M{}
+
+	if req.Email != nil {
+		update["notification_preferences.email"] = *req.Email
+	}
+	if req.Push != nil {
+		update["notification_preferences.push"] = *req.Push
+	}
+	if req.SMS != nil {
+		update["notification_preferences.sms"] = *req.SMS
+	}
+	if req.InApp != nil {
+		update["notification_preferences.in_app"] = *req.InApp
+	}
+	if req.Announcements != nil {
+		update["notification_preferences.announcements"] = *req.Announcements
+	}
+	if req.Events != nil {
+		update["notification_preferences.events"] = *req.Events
+	}
+	if req.CityIssues != nil {
+		update["notification_preferences.city_issues"] = *req.CityIssues
+	}
+	if req.Polls != nil {
+		update["notification_preferences.polls"] = *req.Polls
+	}
+	if req.Petitions != nil {
+		update["notification_preferences.petitions"] = *req.Petitions
+	}
+
+	if len(update) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "No preferences to update",
+		})
+		return
+	}
+
+	update["updated_at"] = time.Now()
+
+	// Оновлюємо налаштування
+	_, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userIDObj},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error updating preferences",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Notification preferences updated successfully",
 	})
 }

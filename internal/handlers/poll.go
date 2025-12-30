@@ -1255,3 +1255,168 @@ func cleanupOldPolls(pollCollection *mongo.Collection) {
 		fmt.Printf("Deleted %d old polls (older than 90 days)\n", result.DeletedCount)
 	}
 }
+
+// GetPollStats повертає статистику опитувань для адміністратора
+func (h *PollHandler) GetPollStats(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pollCollection := h.db.Collection("polls")
+
+	// Загальна кількість опитувань
+	totalPolls, err := pollCollection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error counting polls",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Опитування за статусом
+	statusPipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$status",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+
+	statusCursor, err := pollCollection.Aggregate(ctx, statusPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error fetching status statistics",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer statusCursor.Close(ctx)
+
+	var pollsByStatus []bson.M
+	if err := statusCursor.All(ctx, &pollsByStatus); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error decoding status statistics",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Опитування за категоріями
+	categoryPipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$category",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+
+	categoryCursor, err := pollCollection.Aggregate(ctx, categoryPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching category statistics",
+		})
+		return
+	}
+	defer categoryCursor.Close(ctx)
+
+	var pollsByCategory []bson.M
+	if err := categoryCursor.All(ctx, &pollsByCategory); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding category statistics",
+		})
+		return
+	}
+
+	// Найактивніші опитування (за кількістю відповідей)
+	popularPipeline := mongo.Pipeline{
+		{{Key: "$sort", Value: bson.D{{Key: "response_count", Value: -1}}}},
+		{{Key: "$limit", Value: 5}},
+		{{Key: "$project", Value: bson.M{
+			"title":          1,
+			"category":       1,
+			"response_count": 1,
+			"status":         1,
+			"end_date":       1,
+		}}},
+	}
+
+	popularCursor, err := pollCollection.Aggregate(ctx, popularPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching popular polls",
+		})
+		return
+	}
+	defer popularCursor.Close(ctx)
+
+	var popularPolls []bson.M
+	if err := popularCursor.All(ctx, &popularPolls); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding popular polls",
+		})
+		return
+	}
+
+	// Загальна кількість відповідей
+	responsePipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":             nil,
+			"total_responses": bson.M{"$sum": "$response_count"},
+		}}},
+	}
+
+	responseCursor, err := pollCollection.Aggregate(ctx, responsePipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching response statistics",
+		})
+		return
+	}
+	defer responseCursor.Close(ctx)
+
+	var responseStats []bson.M
+	responseCursor.All(ctx, &responseStats)
+
+	totalResponses := int64(0)
+	if len(responseStats) > 0 {
+		if count, ok := responseStats[0]["total_responses"].(int32); ok {
+			totalResponses = int64(count)
+		} else if count, ok := responseStats[0]["total_responses"].(int64); ok {
+			totalResponses = count
+		}
+	}
+
+	// Активні опитування
+	activePolls, _ := pollCollection.CountDocuments(ctx, bson.M{
+		"status":   "active",
+		"end_date": bson.M{"$gte": time.Now()},
+	})
+
+	// Завершені опитування
+	completedPolls, _ := pollCollection.CountDocuments(ctx, bson.M{
+		"status": bson.M{"$in": []string{"completed", "closed"}},
+	})
+
+	// Опитування створені за останній місяць
+	oneMonthAgo := time.Now().AddDate(0, -1, 0)
+	recentPolls, _ := pollCollection.CountDocuments(ctx, bson.M{
+		"created_at": bson.M{"$gte": oneMonthAgo},
+	})
+
+	// Середня кількість відповідей на опитування
+	averageResponses := float64(0)
+	if totalPolls > 0 {
+		averageResponses = float64(totalResponses) / float64(totalPolls)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_polls":       totalPolls,
+		"total_responses":   totalResponses,
+		"average_responses": averageResponses,
+		"active_polls":      activePolls,
+		"completed_polls":   completedPolls,
+		"recent_polls":      recentPolls,
+		"polls_by_status":   pollsByStatus,
+		"polls_by_category": pollsByCategory,
+		"popular_polls":     popularPolls,
+		"timestamp":         time.Now(),
+	})
+}

@@ -928,3 +928,291 @@ func (h *CityIssueHandler) notifySubscribersAboutStatusChange(issueID primitive.
 		)
 	}
 }
+
+// UpdateIssue - оновлення проблеми міста (автором)
+func (h *CityIssueHandler) UpdateIssue(c *gin.Context) {
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid issue ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type UpdateIssueRequest struct {
+		Title       string `json:"title,omitempty"`
+		Description string `json:"description,omitempty"`
+	}
+
+	var req UpdateIssueRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач є автором
+	var issue models.CityIssue
+	err = h.cityIssueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Issue not found",
+		})
+		return
+	}
+
+	if issue.ReporterID != userIDObj {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only the author can update this issue",
+		})
+		return
+	}
+
+	// Формуємо оновлення
+	update := bson.M{
+		"updated_at": time.Now(),
+	}
+
+	if req.Title != "" {
+		update["title"] = req.Title
+	}
+	if req.Description != "" {
+		update["description"] = req.Description
+	}
+
+	// Оновлюємо проблему
+	_, err = h.cityIssueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating issue",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Issue updated successfully",
+	})
+}
+
+// UpvoteIssue - голосування за проблему
+func (h *CityIssueHandler) UpvoteIssue(c *gin.Context) {
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid issue ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач вже голосував
+	var issue models.CityIssue
+	err = h.cityIssueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Issue not found",
+		})
+		return
+	}
+
+	// Перевіряємо чи вже є голос
+	for _, voterID := range issue.Upvotes {
+		if voterID == userIDObj {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You have already upvoted this issue",
+			})
+			return
+		}
+	}
+
+	// Додаємо голос
+	_, err = h.cityIssueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{
+			"$push": bson.M{"upvotes": userIDObj},
+			"$inc":  bson.M{"upvote_count": 1},
+			"$set":  bson.M{"updated_at": time.Now()},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error upvoting issue",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Issue upvoted successfully",
+	})
+}
+
+// UpdateIssueStatus - оновлення статусу проблеми (модератор)
+func (h *CityIssueHandler) UpdateIssueStatus(c *gin.Context) {
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid issue ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type StatusUpdateRequest struct {
+		Status string `json:"status" binding:"required,oneof=pending in_progress resolved rejected"`
+		Note   string `json:"note,omitempty"`
+	}
+
+	var req StatusUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid status",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Оновлюємо статус
+	update := bson.M{
+		"status":     req.Status,
+		"updated_at": time.Now(),
+	}
+
+	if req.Note != "" {
+		update["status_note"] = req.Note
+	}
+
+	if req.Status == "resolved" {
+		update["resolved_at"] = time.Now()
+	}
+
+	result, err := h.cityIssueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating status",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Issue not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Issue status updated successfully",
+		"status":  req.Status,
+	})
+}
+
+// AssignIssue - призначення відповідального за проблему
+func (h *CityIssueHandler) AssignIssue(c *gin.Context) {
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid issue ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type AssignRequest struct {
+		AssignedToID string `json:"assigned_to_id" binding:"required"`
+		Note         string `json:"note,omitempty"`
+	}
+
+	var req AssignRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	assignedToID, err := primitive.ObjectIDFromHex(req.AssignedToID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач існує
+	var user models.User
+	err = h.userCollection.FindOne(ctx, bson.M{"_id": assignedToID}).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	// Призначаємо
+	update := bson.M{
+		"assigned_to_id": assignedToID,
+		"assigned_at":    time.Now(),
+		"updated_at":     time.Now(),
+	}
+
+	if req.Note != "" {
+		update["assignment_note"] = req.Note
+	}
+
+	result, err := h.cityIssueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error assigning issue",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Issue not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "Issue assigned successfully",
+		"assigned_to": user.FullName,
+	})
+}

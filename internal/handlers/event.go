@@ -728,3 +728,211 @@ func (h *EventHandler) GetEventParticipants(c *gin.Context) {
 		"count":        len(participants),
 	})
 }
+
+// AttendEvent - користувач відмічає що відвідає подію
+func (h *EventHandler) AttendEvent(c *gin.Context) {
+	eventID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid event ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи подія існує
+	var event models.Event
+	err = h.eventCollection.FindOne(ctx, bson.M{"_id": eventID}).Decode(&event)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Event not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching event",
+		})
+		return
+	}
+
+	// Перевіряємо чи користувач вже відмітив участь
+	for _, attendeeID := range event.Attendees {
+		if attendeeID == userIDObj {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "You are already attending this event",
+			})
+			return
+		}
+	}
+
+	// Додаємо користувача до списку учасників
+	_, err = h.eventCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": eventID},
+		bson.M{
+			"$push": bson.M{"attendees": userIDObj},
+			"$inc":  bson.M{"attendee_count": 1},
+			"$set":  bson.M{"updated_at": time.Now()},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error attending event",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Successfully marked as attending",
+	})
+}
+
+// ModerateEvent - модерація події (схвалення/відхилення)
+func (h *EventHandler) ModerateEvent(c *gin.Context) {
+	eventID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid event ID",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	type ModerateRequest struct {
+		Action string `json:"action" binding:"required,oneof=approve reject"`
+		Reason string `json:"reason,omitempty"`
+	}
+
+	var req ModerateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Визначаємо новий статус
+	var newStatus string
+	if req.Action == "approve" {
+		newStatus = "approved"
+	} else {
+		newStatus = "rejected"
+	}
+
+	// Оновлюємо подію
+	result, err := h.eventCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": eventID},
+		bson.M{
+			"$set": bson.M{
+				"status":            newStatus,
+				"moderation_reason": req.Reason,
+				"moderated_at":      time.Now(),
+				"updated_at":        time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error moderating event",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Event not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Event moderated successfully",
+		"status":  newStatus,
+	})
+}
+
+// GetContentStats - статистика контенту (події, оголошення, тощо)
+func (h *EventHandler) GetContentStats(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Загальна кількість подій
+	totalEvents, _ := h.eventCollection.CountDocuments(ctx, bson.M{})
+
+	// Події за статусом
+	pipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$status",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+
+	cursor, err := h.eventCollection.Aggregate(ctx, pipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching event statistics",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var eventStats []bson.M
+	if err := cursor.All(ctx, &eventStats); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding statistics",
+		})
+		return
+	}
+
+	// Найпопулярніші події (за кількістю учасників)
+	popularPipeline := mongo.Pipeline{
+		{{Key: "$sort", Value: bson.D{{Key: "attendee_count", Value: -1}}}},
+		{{Key: "$limit", Value: 5}},
+		{{Key: "$project", Value: bson.M{
+			"title":          1,
+			"attendee_count": 1,
+			"start_date":     1,
+		}}},
+	}
+
+	popularCursor, err := h.eventCollection.Aggregate(ctx, popularPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching popular events",
+		})
+		return
+	}
+	defer popularCursor.Close(ctx)
+
+	var popularEvents []bson.M
+	popularCursor.All(ctx, &popularEvents)
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_events":     totalEvents,
+		"events_by_status": eventStats,
+		"popular_events":   popularEvents,
+		"timestamp":        time.Now(),
+	})
+}
