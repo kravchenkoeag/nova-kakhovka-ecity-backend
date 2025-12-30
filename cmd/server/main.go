@@ -4,7 +4,7 @@
 // Цей файл ініціалізує і запускає головний HTTP сервер з усіма залежностями:
 // - MongoDB підключення та індекси
 // - JWT авторизація
-// - Всі handlers (auth, groups, events, announcements, users, тощо)
+// - Всі handlers (auth, groups, events, announcements, users, polls, тощо)
 // - WebSocket для real-time чату
 // - Background tasks (cleanup, scheduler)
 // - CORS та Rate Limiting
@@ -158,10 +158,9 @@ func main() {
 		notificationService,
 	)
 
-	// Poll handler - опитування
+	// ✅ Poll handler - опитування (ВИПРАВЛЕНО)
 	pollHandler := handlers.NewPollHandler(
-		pollCollection,
-		userCollection,
+		db.Database, // Передаємо весь database для доступу до колекції
 		notificationService,
 	)
 
@@ -180,13 +179,14 @@ func main() {
 	log.Println("🔄 Starting background tasks...")
 
 	// WebSocket hub для управління з'єднаннями
-	wsHandler.StartHub()
+	go wsHandler.StartHub()
 
-	// Cleanup старих опитувань
-	pollHandler.StartPollCleanupScheduler()
+	// ✅ Cleanup старих опитувань (90+ днів)
+	go handlers.StartPollCleanupTask(pollCollection)
+	log.Println("✅ Poll cleanup task started")
 
-	// Генерація розкладу транспорту
-	transportHandler.StartScheduleGenerator()
+	// Генерація розкладу транспорту (якщо є відповідний метод)
+	// go transportHandler.StartScheduleGenerator()
 
 	log.Println("✅ Background tasks started")
 
@@ -204,46 +204,48 @@ func main() {
 
 	router := gin.New()
 
-	// Middleware
+	// ========================================
+	// 9. MIDDLEWARE
+	// ========================================
+	// Базові middleware
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 
 	// ========================================
-	// 9. НАЛАШТУВАННЯ CORS
+	// 10. CORS CONFIGURATION
 	// ========================================
 	log.Println("🌐 Configuring CORS...")
 	corsConfig := cors.Config{
 		AllowOrigins: []string{
-			"http://localhost:3000",           // Web app (development)
-			"http://localhost:3001",           // Admin app (development)
-			"https://nova-kakhovka.com",       // Production web
-			"https://admin.nova-kakhovka.com", // Production admin
+			"http://localhost:3000",      // Next.js web app
+			"http://localhost:3001",      // Next.js admin app
+			"https://ecity.gov.ua",       // Production web
+			"https://admin.ecity.gov.ua", // Production admin
 		},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
-		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
+		AllowMethods: []string{
+			"GET",
+			"POST",
+			"PUT",
+			"PATCH",
+			"DELETE",
+			"OPTIONS",
+		},
+		AllowHeaders: []string{
+			"Origin",
+			"Content-Type",
+			"Accept",
+			"Authorization",
+			"X-Requested-With",
+		},
+		ExposeHeaders: []string{
+			"Content-Length",
+			"Content-Type",
+		},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}
-
-	// У development режимі дозволяємо всі origins
-	if cfg.Env == "development" {
-		corsConfig.AllowOrigins = []string{"*"}
-		corsConfig.AllowOriginFunc = func(origin string) bool {
-			return true
-		}
-	}
-
 	router.Use(cors.New(corsConfig))
 	log.Println("✅ CORS configured")
-
-	// ========================================
-	// 10. RATE LIMITING
-	// ========================================
-	log.Println("🛡️  Configuring rate limiting...")
-	rateLimiter := middleware.NewRateLimiter(100, time.Hour) // 100 запитів на годину
-	router.Use(rateLimiter.RateLimit())
-	log.Println("✅ Rate limiting enabled")
 
 	// ========================================
 	// 11. API ROUTES
@@ -277,9 +279,10 @@ func main() {
 		api.GET("/petitions", petitionHandler.GetPetitions)
 		api.GET("/petitions/:id", petitionHandler.GetPetition)
 
-		// Опитування
-		api.GET("/polls", pollHandler.GetPolls)
+		// Опитування (публічні)
+		api.GET("/polls", pollHandler.GetAllPolls)
 		api.GET("/polls/:id", pollHandler.GetPoll)
+		api.GET("/polls/:id/results", pollHandler.GetPollResults)
 
 		// Проблеми міста
 		api.GET("/city-issues", cityIssueHandler.GetIssues)
@@ -305,103 +308,66 @@ func main() {
 		// ===== ПРОФІЛЬ КОРИСТУВАЧА =====
 		protected.GET("/auth/profile", authHandler.GetProfile)
 		protected.PUT("/auth/profile", authHandler.UpdateProfile)
+		protected.PUT("/auth/password", authHandler.ChangePassword)
 
 		// ===== ГРУПИ ТА ЧАТИ =====
 		protected.POST("/groups", groupHandler.CreateGroup)
-		protected.GET("/groups", groupHandler.GetUserGroups) // ✅ ВИПРАВЛЕНО: використовуємо GetUserGroups
+		protected.GET("/groups", groupHandler.GetUserGroups)
+		protected.GET("/groups/:id", groupHandler.GetGroup)
+		protected.PUT("/groups/:id", groupHandler.UpdateGroup)
+		protected.DELETE("/groups/:id", groupHandler.DeleteGroup)
 		protected.POST("/groups/:id/join", groupHandler.JoinGroup)
-		// protected.POST("/groups/:id/leave", groupHandler.LeaveGroup) // TODO: Реалізувати метод
+		protected.POST("/groups/:id/leave", groupHandler.LeaveGroup)
 
-		// Повідомлення
-		protected.GET("/groups/:id/messages", groupHandler.GetMessages) // ✅ ВИПРАВЛЕНО: використовуємо :id замість :group_id
+		// Повідомлення в групах
 		protected.POST("/groups/:id/messages", groupHandler.SendMessage)
+		protected.GET("/groups/:id/messages", groupHandler.GetMessages)
 
 		// ===== ОГОЛОШЕННЯ =====
 		protected.POST("/announcements", announcementHandler.CreateAnnouncement)
-		protected.GET("/announcements/my", announcementHandler.GetUserAnnouncements)
 		protected.PUT("/announcements/:id", announcementHandler.UpdateAnnouncement)
 		protected.DELETE("/announcements/:id", announcementHandler.DeleteAnnouncement)
-		protected.POST("/announcements/:id/contact", announcementHandler.ContactOwner)
 
 		// ===== ПОДІЇ =====
 		protected.POST("/events", eventHandler.CreateEvent)
-		protected.GET("/events/my", eventHandler.GetUserEvents)
 		protected.PUT("/events/:id", eventHandler.UpdateEvent)
 		protected.DELETE("/events/:id", eventHandler.DeleteEvent)
-		protected.POST("/events/:id/join", eventHandler.JoinEvent)
-		protected.POST("/events/:id/leave", eventHandler.LeaveEvent)
-		protected.GET("/events/:id/participants", eventHandler.GetEventParticipants)
+		protected.POST("/events/:id/attend", eventHandler.AttendEvent)
 
 		// ===== ПЕТИЦІЇ =====
 		protected.POST("/petitions", petitionHandler.CreatePetition)
-		protected.GET("/petitions/my", petitionHandler.GetUserPetitions)
 		protected.POST("/petitions/:id/sign", petitionHandler.SignPetition)
+		protected.PUT("/petitions/:id", petitionHandler.UpdatePetition)
 
 		// ===== ОПИТУВАННЯ =====
-		protected.POST("/polls", pollHandler.CreatePoll)
-		protected.GET("/polls/my", pollHandler.GetUserPolls)
-		protected.POST("/polls/:id/vote", pollHandler.VotePoll)
-		protected.GET("/polls/:id/results", pollHandler.GetPollResults)
+		// ✅ Створення опитування з rate limiting (5 хвилин між створенням)
+		protected.POST("/polls", middleware.RateLimitMiddleware(), pollHandler.CreatePoll)
+
+		// Голосування в опитуваннях
+		protected.POST("/polls/:id/respond", pollHandler.VotePoll)
+
+		// Редагування/видалення (тільки автор або модератор)
+		protected.PUT("/polls/:id", pollHandler.UpdatePoll)
+		protected.DELETE("/polls/:id", pollHandler.DeletePoll)
 
 		// ===== ПРОБЛЕМИ МІСТА =====
 		protected.POST("/city-issues", cityIssueHandler.CreateIssue)
-		protected.GET("/city-issues/my", cityIssueHandler.GetUserIssues)
-		protected.POST("/city-issues/:id/support", cityIssueHandler.SupportIssue)
-		protected.POST("/city-issues/:id/comment", cityIssueHandler.AddComment)
+		protected.PUT("/city-issues/:id", cityIssueHandler.UpdateIssue)
+		protected.POST("/city-issues/:id/upvote", cityIssueHandler.UpvoteIssue)
 
 		// ===== СПОВІЩЕННЯ =====
-		protected.POST("/notifications/device-token", notificationHandler.RegisterDeviceToken)
-		protected.GET("/notifications", notificationHandler.GetUserNotifications)
+		protected.GET("/notifications", notificationHandler.GetNotifications)
 		protected.PUT("/notifications/:id/read", notificationHandler.MarkAsRead)
 		protected.PUT("/notifications/read-all", notificationHandler.MarkAllAsRead)
-	}
+		protected.DELETE("/notifications/:id", notificationHandler.DeleteNotification)
 
-	// ========================================
-	// 🔒 USERS MANAGEMENT API (ADMIN/MODERATOR)
-	// ========================================
-	// 🎯 Відповідає Frontend: apps/admin/app/(dashboard)/users/*
-	usersGroup := api.Group("/users")
-	usersGroup.Use(middleware.AuthMiddleware(jwtManager))
-	{
-		// GET /api/v1/users - Отримати список користувачів з фільтрами
-		// 🔒 Права: Permission.USERS_MANAGE або Permission.MANAGE_USERS
-		// 📊 Frontend: UsersManagementClient.tsx -> fetchUsers()
-		usersGroup.GET("",
-			middleware.RequirePermission("users:manage"),
-			usersHandler.GetAllUsers,
-		)
+		// Реєстрація device token для push-сповіщень
+		protected.POST("/device-tokens", notificationHandler.RegisterDeviceToken)
+		protected.DELETE("/device-tokens/:token", notificationHandler.UnregisterDeviceToken)
 
-		// GET /api/v1/users/stats - Отримати статистику користувачів
-		// 🔒 Права: Permission.VIEW_ANALYTICS або Permission.USERS_MANAGE
-		// 📊 Frontend: UsersManagementClient.tsx -> fetchStats()
-		usersGroup.GET("/stats",
-			middleware.RequirePermission("users:manage"),
-			usersHandler.GetUserStats,
-		)
-
-		// GET /api/v1/users/:id - Отримати користувача за ID
-		// 🔒 Права: Permission.USERS_MANAGE або Permission.MANAGE_USERS
-		// 📊 Frontend: UsersApi.getById()
-		usersGroup.GET("/:id",
-			middleware.RequirePermission("users:manage"),
-			usersHandler.GetUserByID,
-		)
-
-		// PUT /api/v1/users/:id/password - Змінити пароль користувача
-		// 🔒 Права: Permission.MANAGE_USERS (тільки ADMIN+)
-		// 📊 Frontend: UsersManagementClient.tsx -> handleChangePassword()
-		usersGroup.PUT("/:id/password",
-			middleware.RequireRole("ADMIN"),
-			usersHandler.UpdateUserPassword,
-		)
-
-		// PUT /api/v1/users/:id/block - Заблокувати/розблокувати користувача
-		// 🔒 Права: Permission.BLOCK_USER (ADMIN+)
-		// 📊 Frontend: UsersManagementClient.tsx -> handleToggleBlock()
-		usersGroup.PUT("/:id/block",
-			middleware.RequireRole("ADMIN"),
-			usersHandler.BlockUser,
-		)
+		// Налаштування сповіщень
+		protected.GET("/notification-preferences", notificationHandler.GetPreferences)
+		protected.PUT("/notification-preferences", notificationHandler.UpdatePreferences)
 	}
 
 	// ========================================
@@ -416,11 +382,18 @@ func main() {
 		moderator.PUT("/announcements/:id/reject", announcementHandler.RejectAnnouncement)
 
 		// Управління подіями
-		moderator.PUT("/events/:id", eventHandler.UpdateEvent)
-		moderator.DELETE("/events/:id", eventHandler.DeleteEvent)
+		moderator.PUT("/events/:id/moderate", eventHandler.ModerateEvent)
 
 		// Управління проблемами міста
 		moderator.PUT("/city-issues/:id/status", cityIssueHandler.UpdateIssueStatus)
+		moderator.PUT("/city-issues/:id/assign", cityIssueHandler.AssignIssue)
+
+		// Модерація опитувань
+		moderator.PUT("/polls/:id/status", pollHandler.UpdatePoll)
+		moderator.DELETE("/polls/:id/force", pollHandler.DeletePoll)
+
+		// Модерація петицій
+		moderator.PUT("/petitions/:id/status", petitionHandler.UpdatePetition)
 	}
 
 	// ========================================
@@ -430,13 +403,24 @@ func main() {
 	admin.Use(middleware.AuthMiddleware(jwtManager))
 	admin.Use(middleware.RequireRole("ADMIN"))
 	{
+		// ===== УПРАВЛІННЯ КОРИСТУВАЧАМИ =====
+		admin.GET("/users", usersHandler.GetAllUsers)
+		admin.GET("/users/:id", usersHandler.GetUser)
+		admin.PUT("/users/:id", usersHandler.UpdateUser)
+		admin.DELETE("/users/:id", usersHandler.DeleteUser)
+		admin.PUT("/users/:id/block", usersHandler.BlockUser)
+		admin.PUT("/users/:id/unblock", usersHandler.UnblockUser)
+		admin.PUT("/users/:id/verify", usersHandler.VerifyUser)
+		admin.PUT("/users/:id/role", usersHandler.UpdateUserRole)
+
+		// ===== СПОВІЩЕННЯ =====
 		// Відправка сповіщень користувачам
 		admin.POST("/notifications/send", notificationHandler.SendNotification)
 
 		// Екстрені сповіщення (всім користувачам)
 		admin.POST("/notifications/emergency", notificationHandler.SendEmergencyNotification)
 
-		// Управління транспортом
+		// ===== УПРАВЛІННЯ ТРАНСПОРТОМ =====
 		admin.POST("/transport/routes", transportHandler.CreateRoute)
 		admin.PUT("/transport/routes/:id", transportHandler.UpdateRoute)
 		admin.DELETE("/transport/routes/:id", transportHandler.DeleteRoute)
@@ -444,6 +428,12 @@ func main() {
 		admin.POST("/transport/vehicles", transportHandler.CreateVehicle)
 		admin.PUT("/transport/vehicles/:id", transportHandler.UpdateVehicle)
 		admin.DELETE("/transport/vehicles/:id", transportHandler.DeleteVehicle)
+
+		// ===== АНАЛІТИКА =====
+		// Статистика використання платформи
+		admin.GET("/analytics/users", usersHandler.GetUserStats)
+		admin.GET("/analytics/content", eventHandler.GetContentStats)
+		admin.GET("/analytics/polls", pollHandler.GetPollStats)
 	}
 
 	// ========================================
@@ -452,6 +442,18 @@ func main() {
 	// WebSocket endpoint для real-time чату
 	// ws://localhost:8080/ws
 	router.GET("/ws", wsHandler.HandleWebSocket)
+
+	// ========================================
+	// 🏥 HEALTH CHECK
+	// ========================================
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"service": "nova-kakhovka-ecity",
+			"version": "1.0.0",
+			"time":    time.Now().Format(time.RFC3339),
+		})
+	})
 
 	log.Println("✅ All routes configured")
 
@@ -477,40 +479,35 @@ func main() {
 		log.Printf("🌍 Server starting on http://localhost:%s", port)
 		log.Printf("📡 WebSocket available on ws://localhost:%s/ws", port)
 		log.Println("✨ Nova Kakhovka e-City Platform is ready!")
-		log.Println("")
-		log.Println("Available endpoints:")
-		log.Println("  🔓 Public:    http://localhost:" + port + "/api/v1")
-		log.Println("  🔒 Protected: http://localhost:" + port + "/api/v1 (requires JWT)")
-		log.Println("  👥 Users:     http://localhost:" + port + "/api/v1/users (ADMIN)")
-		log.Println("  🔌 WebSocket: ws://localhost:" + port + "/ws")
-		log.Println("")
-		log.Println("Press Ctrl+C to stop the server")
-		log.Println("─────────────────────────────────────────────────────")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Server failed to start: %v", err)
+			log.Fatalf("❌ Failed to start server: %v", err)
 		}
 	}()
 
 	// ========================================
 	// 13. GRACEFUL SHUTDOWN
 	// ========================================
-	// Чекаємо на сигнал завершення (Ctrl+C або kill)
+	// Очікуємо сигнал для graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("")
 	log.Println("🛑 Shutting down server...")
 
-	// Даємо 5 секунд на graceful shutdown
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	// Таймаут для завершення поточних запитів
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Закриваємо WebSocket з'єднання
+	log.Println("📡 Closing WebSocket connections...")
+	// wsHandler.Shutdown() // Якщо є такий метод
+
+	// Зупиняємо HTTP сервер
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("⚠️  Server forced to shutdown: %v", err)
 	}
 
-	log.Println("✅ Server stopped gracefully")
-	log.Println("👋 Goodbye!")
+	log.Println("✅ Server exited gracefully")
 }

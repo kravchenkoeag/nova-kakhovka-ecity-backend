@@ -17,17 +17,32 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// PollHandler обробляє запити, пов'язані з опитуваннями
 type PollHandler struct {
 	pollCollection      *mongo.Collection
 	userCollection      *mongo.Collection
 	notificationService *services.NotificationService
 }
 
+// NewPollHandler створює новий екземпляр PollHandler
+func NewPollHandler(db *mongo.Database, notificationService *services.NotificationService) *PollHandler {
+	return &PollHandler{
+		pollCollection:      db.Collection("polls"),
+		userCollection:      db.Collection("users"),
+		notificationService: notificationService,
+	}
+}
+
+// ========================================
+// REQUEST/RESPONSE STRUCTURES
+// ========================================
+
+// CreatePollRequest структура запиту для створення опроса
 type CreatePollRequest struct {
 	Title            string                 `json:"title" validate:"required,min=5,max=300"`
 	Description      string                 `json:"description" validate:"required,min=10,max=2000"`
 	Category         string                 `json:"category" validate:"required,oneof=city_planning transport infrastructure social environment governance budget education healthcare"`
-	Questions        []CreatePollQuestion   `json:"questions" validate:"required,min=1"`
+	Questions        []CreatePollQuestion   `json:"questions" validate:"required,min=1,max=20"`
 	AllowMultiple    bool                   `json:"allow_multiple"`
 	IsAnonymous      bool                   `json:"is_anonymous"`
 	IsPublic         bool                   `json:"is_public"`
@@ -39,89 +54,95 @@ type CreatePollRequest struct {
 	Tags             []string               `json:"tags"`
 }
 
+// CreatePollQuestion структура питання для створення опроса
 type CreatePollQuestion struct {
-	Text       string             `json:"text" validate:"required,min=5,max=500"`
-	Type       string             `json:"type" validate:"required,oneof=single_choice multiple_choice rating text scale yes_no"`
-	Options    []CreatePollOption `json:"options,omitempty"`
-	IsRequired bool               `json:"is_required"`
-	MinRating  int                `json:"min_rating,omitempty"`
-	MaxRating  int                `json:"max_rating,omitempty"`
-	MaxLength  int                `json:"max_length,omitempty"`
+	Text       string              `json:"text" validate:"required,min=5,max=500"`
+	Type       models.QuestionType `json:"type" validate:"required,oneof=single_choice multiple_choice text rating yes_no"`
+	IsRequired bool                `json:"is_required"`
+	Options    []CreatePollOption  `json:"options"`
+	MinRating  int                 `json:"min_rating,omitempty"`
+	MaxRating  int                 `json:"max_rating,omitempty"`
+	MaxLength  int                 `json:"max_length,omitempty"`
 }
 
+// CreatePollOption структура опції відповіді для питання
 type CreatePollOption struct {
-	Text  string `json:"text" validate:"required,min=1,max=200"`
-	Image string `json:"image,omitempty"`
+	Text string `json:"text" validate:"required,min=1,max=200"`
 }
 
+// SubmitPollResponseRequest структура відповіді користувача на опитування
 type SubmitPollResponseRequest struct {
-	Answers []SubmitPollAnswer `json:"answers" validate:"required,min=1"`
+	Answers []PollAnswerRequest `json:"answers" validate:"required,min=1"`
 }
 
-type SubmitPollAnswer struct {
+// PollAnswerRequest структура одної відповіді на питання
+type PollAnswerRequest struct {
 	QuestionID   string   `json:"question_id" validate:"required"`
 	OptionIDs    []string `json:"option_ids,omitempty"`
-	TextAnswer   string   `json:"text_answer,omitempty"`
+	TextAnswer   *string  `json:"text_answer,omitempty"`
 	NumberAnswer *int     `json:"number_answer,omitempty"`
 	BoolAnswer   *bool    `json:"bool_answer,omitempty"`
 }
 
+// PollFilters структура для фільтрації опросів
 type PollFilters struct {
-	Category  string    `form:"category"`
-	Status    string    `form:"status"`
-	CreatorID string    `form:"creator_id"`
-	IsPublic  *bool     `form:"is_public"`
-	DateFrom  time.Time `form:"date_from"`
-	DateTo    time.Time `form:"date_to"`
-	Page      int       `form:"page"`
-	Limit     int       `form:"limit"`
-	SortBy    string    `form:"sort_by"`
-	SortOrder string    `form:"sort_order"`
-	Search    string    `form:"search"`
+	Status    string `form:"status"`
+	Category  string `form:"category"`
+	CreatorID string `form:"creator_id"`
+	Tag       string `form:"tag"`
+	IsPublic  *bool  `form:"is_public"`
+	SortBy    string `form:"sort_by"`
+	SortOrder string `form:"sort_order"`
+	Page      int    `form:"page" binding:"min=1"`
+	Limit     int    `form:"limit" binding:"min=1,max=100"`
 }
 
-func NewPollHandler(pollCollection, userCollection *mongo.Collection, notificationService *services.NotificationService) *PollHandler {
-	return &PollHandler{
-		pollCollection:      pollCollection,
-		userCollection:      userCollection,
-		notificationService: notificationService,
-	}
-}
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
 
-func (h *PollHandler) validatePollCreation(req CreatePollRequest) error {
-	// Проверяем каждый вопрос
-	for i, question := range req.Questions {
-		switch question.Type {
-		case models.QuestionTypeSingleChoice, models.QuestionTypeMultipleChoice:
-			if len(question.Options) < 2 {
-				return fmt.Errorf("question %d: choice questions must have at least 2 options", i+1)
-			}
-			if len(question.Options) > 20 {
-				return fmt.Errorf("question %d: too many options (max 20)", i+1)
-			}
-
-		case models.QuestionTypeRating, models.QuestionTypeScale:
-			if question.MinRating >= question.MaxRating {
-				return fmt.Errorf("question %d: min_rating must be less than max_rating", i+1)
-			}
-			if question.MinRating < 1 || question.MaxRating > 10 {
-				return fmt.Errorf("question %d: rating must be between 1 and 10", i+1)
-			}
-
-		case models.QuestionTypeText:
-			if question.MaxLength > 0 && question.MaxLength < 10 {
-				return fmt.Errorf("question %d: max_length must be at least 10", i+1)
-			}
-			if question.MaxLength > 5000 {
-				return fmt.Errorf("question %d: max_length cannot exceed 5000", i+1)
-			}
+// checkModerator безпечно перевіряє, чи є користувач модератором
+func checkModerator(c *gin.Context) bool {
+	if isMod, exists := c.Get("is_moderator"); exists {
+		if modBool, ok := isMod.(bool); ok {
+			return modBool
 		}
 	}
-	return nil
+	return false
 }
 
-// CreatePoll создает новое опитування
+// getUserID отримує ID користувача з контексту Gin
+func getUserID(c *gin.Context) (primitive.ObjectID, error) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		return primitive.NilObjectID, fmt.Errorf("user_id not found in context")
+	}
+
+	userIDObj, ok := userID.(primitive.ObjectID)
+	if !ok {
+		return primitive.NilObjectID, fmt.Errorf("invalid user_id type")
+	}
+
+	return userIDObj, nil
+}
+
+// ========================================
+// CRUD OPERATIONS
+// ========================================
+
+// CreatePoll створює новий опрос
+// @Summary Створити новий опрос
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param poll body CreatePollRequest true "Дані опроса"
+// @Success 201 {object} models.Poll
+// @Failure 400 {object} gin.H
+// @Failure 401 {object} gin.H
+// @Failure 429 {object} gin.H
+// @Router /api/v1/polls [post]
 func (h *PollHandler) CreatePoll(c *gin.Context) {
+	// Парсинг запиту
 	var req CreatePollRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -131,96 +152,201 @@ func (h *PollHandler) CreatePoll(c *gin.Context) {
 		return
 	}
 
-	// Проверяем права модератора для создания
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	// Валидация специфичная для опросов
-	if err := h.validatePollCreation(req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid poll configuration",
+	// Отримання ID користувача
+	userIDObj, err := getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "User not authenticated",
 			"details": err.Error(),
 		})
 		return
 	}
 
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	// ✅ ВАЛІДАЦІЯ 1: Мінімальна тривалість опросу (1 година)
+	if req.StartDate.IsZero() {
+		req.StartDate = time.Now()
+	}
+	duration := req.EndDate.Sub(req.StartDate)
+	if duration < 1*time.Hour {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid poll duration",
+			"details": "Poll duration must be at least 1 hour",
+		})
+		return
+	}
 
+	// ✅ ВАЛІДАЦІЯ 2: Перевірка логіки дат (EndDate > StartDate)
+	if req.EndDate.Before(req.StartDate) || req.EndDate.Equal(req.StartDate) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid date range",
+			"details": "End date must be after start date",
+		})
+		return
+	}
+
+	// ✅ ВАЛІДАЦІЯ 3: Ліміт активних опросів (5 на користувача)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Формируем вопросы
-	questions := make([]models.PollQuestion, 0, len(req.Questions))
+	activeCount, err := h.pollCollection.CountDocuments(ctx, bson.M{
+		"creator_id": userIDObj,
+		"status":     models.PollStatusActive,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error checking active polls",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if activeCount >= 5 {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":   "Active poll limit reached",
+			"details": "You can have maximum 5 active polls at a time",
+		})
+		return
+	}
+
+	// ✅ ВАЛІДАЦІЯ 4: Захист від спаму (rate limiting - 5 хвилин між створенням)
+	var lastPoll models.Poll
+	findOptions := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	err = h.pollCollection.FindOne(ctx, bson.M{"creator_id": userIDObj}, findOptions).Decode(&lastPoll)
+
+	if err == nil {
+		timeSinceLastPoll := time.Since(lastPoll.CreatedAt)
+		if timeSinceLastPoll < 5*time.Minute {
+			remainingTime := 5*time.Minute - timeSinceLastPoll
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":   "Rate limit exceeded",
+				"details": fmt.Sprintf("Please wait %v before creating another poll", remainingTime.Round(time.Second)),
+			})
+			return
+		}
+	}
+
+	// Перетворення груп
+	var targetGroupIDs []primitive.ObjectID
+	for _, groupIDStr := range req.TargetGroups {
+		groupID, err := primitive.ObjectIDFromHex(groupIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Invalid target group ID",
+				"details": fmt.Sprintf("Group ID '%s' is not valid", groupIDStr),
+			})
+			return
+		}
+		targetGroupIDs = append(targetGroupIDs, groupID)
+	}
+
+	// Створення питань з опціями
+	var questions []models.PollQuestion
 	for _, q := range req.Questions {
 		question := models.PollQuestion{
 			ID:         primitive.NewObjectID(),
 			Text:       q.Text,
 			Type:       q.Type,
 			IsRequired: q.IsRequired,
+			Options:    []models.PollOption{},
 			MinRating:  q.MinRating,
 			MaxRating:  q.MaxRating,
 			MaxLength:  q.MaxLength,
 		}
 
-		// Добавляем опции для вопросов с выбором
+		// Додавання опцій для питань з вибором
 		if q.Type == models.QuestionTypeSingleChoice || q.Type == models.QuestionTypeMultipleChoice {
+			if len(q.Options) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":   "Invalid question options",
+					"details": fmt.Sprintf("Question '%s' requires at least one option", q.Text),
+				})
+				return
+			}
+
 			for _, opt := range q.Options {
-				question.Options = append(question.Options, models.PollOption{
+				option := models.PollOption{
 					ID:    primitive.NewObjectID(),
 					Text:  opt.Text,
-					Image: opt.Image,
 					Votes: 0,
+				}
+				question.Options = append(question.Options, option)
+			}
+		}
+
+		// Валідація rating питань
+		if q.Type == models.QuestionTypeRating {
+			if q.MinRating >= q.MaxRating {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":   "Invalid rating range",
+					"details": fmt.Sprintf("Min rating must be less than max rating for question '%s'", q.Text),
 				})
+				return
 			}
 		}
 
 		questions = append(questions, question)
 	}
 
-	now := time.Now()
+	// Створення об'єкту опросу
 	poll := models.Poll{
-		CreatorID:        userIDObj,
+		ID:               primitive.NewObjectID(),
 		Title:            req.Title,
 		Description:      req.Description,
 		Category:         req.Category,
+		CreatorID:        userIDObj,
 		Questions:        questions,
 		Responses:        []models.PollResponse{},
+		Status:           models.PollStatusDraft, // За замовчуванням Draft
 		AllowMultiple:    req.AllowMultiple,
 		IsAnonymous:      req.IsAnonymous,
 		IsPublic:         req.IsPublic,
-		Status:           models.PollStatusActive,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		TargetGroups:     targetGroupIDs,
+		AgeRestriction:   req.AgeRestriction,
+		LocationRequired: req.LocationRequired,
 		StartDate:        req.StartDate,
 		EndDate:          req.EndDate,
 		Tags:             req.Tags,
-		TargetGroups:     []primitive.ObjectID{}, // Конвертировать строки в ObjectID если нужно
-		AgeRestriction:   req.AgeRestriction,
-		LocationRequired: req.LocationRequired,
 		ViewCount:        0,
-		ShareCount:       0,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
-	result, err := h.pollCollection.InsertOne(ctx, poll)
+	// Якщо StartDate настав, змінюємо статус на Active
+	if !poll.StartDate.After(time.Now()) {
+		poll.Status = models.PollStatusActive
+	}
+
+	// Збереження в базі даних
+	_, err = h.pollCollection.InsertOne(ctx, poll)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error creating poll",
+			"error":   "Error creating poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	poll.ID = result.InsertedID.(primitive.ObjectID)
+	// Надсилання повідомлень цільовим групам
+	if len(poll.TargetGroups) > 0 {
+		go h.notificationService.NotifyNewPoll(poll.ID, poll.TargetGroups)
+	}
+
 	c.JSON(http.StatusCreated, poll)
 }
 
-// GetPolls возвращает список опросов с фильтрацией
-func (h *PollHandler) GetPolls(c *gin.Context) {
+// GetAllPolls повертає список всіх опросів з фільтрацією та пагінацією
+// @Summary Отримати список опросів
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param status query string false "Статус опроса"
+// @Param category query string false "Категорія опроса"
+// @Param page query int false "Номер сторінки" default(1)
+// @Param limit query int false "Кількість елементів на сторінці" default(10)
+// @Success 200 {object} gin.H
+// @Router /api/v1/polls [get]
+func (h *PollHandler) GetAllPolls(c *gin.Context) {
+	// Парсинг фільтрів
 	var filters PollFilters
 	if err := c.ShouldBindQuery(&filters); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -230,73 +356,71 @@ func (h *PollHandler) GetPolls(c *gin.Context) {
 		return
 	}
 
-	// Дефолтные значения для пагинации
-	if filters.Page < 1 {
+	// Встановлення значень за замовчуванням
+	if filters.Page == 0 {
 		filters.Page = 1
 	}
-	if filters.Limit < 1 || filters.Limit > 100 {
-		filters.Limit = 20
+	if filters.Limit == 0 {
+		filters.Limit = 10
+	}
+
+	// Побудова запиту
+	query := bson.M{}
+
+	// Фільтр за статусом
+	if filters.Status != "" {
+		query["status"] = filters.Status
+	}
+
+	// Фільтр за категорією
+	if filters.Category != "" {
+		query["category"] = filters.Category
+	}
+
+	// Фільтр за автором
+	if filters.CreatorID != "" {
+		creatorID, err := primitive.ObjectIDFromHex(filters.CreatorID)
+		if err == nil {
+			query["creator_id"] = creatorID
+		}
+	}
+
+	// Фільтр за тегом
+	if filters.Tag != "" {
+		query["tags"] = filters.Tag
+	}
+
+	// Фільтр за публічністю
+	if filters.IsPublic != nil {
+		query["is_public"] = *filters.IsPublic
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Построение фильтра запроса
-	query := bson.M{}
-
-	if filters.Category != "" {
-		query["category"] = filters.Category
-	}
-	if filters.Status != "" {
-		query["status"] = filters.Status
-	}
-	if filters.CreatorID != "" {
-		if creatorID, err := primitive.ObjectIDFromHex(filters.CreatorID); err == nil {
-			query["creator_id"] = creatorID
-		}
-	}
-	if filters.IsPublic != nil {
-		query["is_public"] = *filters.IsPublic
-	}
-	if !filters.DateFrom.IsZero() || !filters.DateTo.IsZero() {
-		dateQuery := bson.M{}
-		if !filters.DateFrom.IsZero() {
-			dateQuery["$gte"] = filters.DateFrom
-		}
-		if !filters.DateTo.IsZero() {
-			dateQuery["$lte"] = filters.DateTo
-		}
-		query["created_at"] = dateQuery
-	}
-	if filters.Search != "" {
-		query["$or"] = []bson.M{
-			{"title": bson.M{"$regex": filters.Search, "$options": "i"}},
-			{"description": bson.M{"$regex": filters.Search, "$options": "i"}},
-		}
-	}
-
-	// Настройка сортировки
+	// Налаштування сортування
 	sortOptions := options.Find()
 	if filters.SortBy != "" {
 		sortOrder := 1
 		if filters.SortOrder == "desc" {
 			sortOrder = -1
 		}
-		sortOptions.SetSort(bson.D{{filters.SortBy, sortOrder}})
+		sortOptions.SetSort(bson.D{{Key: filters.SortBy, Value: sortOrder}})
 	} else {
-		sortOptions.SetSort(bson.D{{"created_at", -1}})
+		sortOptions.SetSort(bson.D{{Key: "created_at", Value: -1}})
 	}
 
-	// Пагинация
+	// Пагінація
 	skip := (filters.Page - 1) * filters.Limit
 	sortOptions.SetLimit(int64(filters.Limit))
 	sortOptions.SetSkip(int64(skip))
 
-	// Выполнение запроса
+	// Виконання запиту
 	cursor, err := h.pollCollection.Find(ctx, query, sortOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching polls",
+			"error":   "Error fetching polls",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -305,13 +429,17 @@ func (h *PollHandler) GetPolls(c *gin.Context) {
 	var polls []models.Poll
 	if err := cursor.All(ctx, &polls); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error decoding polls",
+			"error":   "Error decoding polls",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Подсчет общего количества
-	total, _ := h.pollCollection.CountDocuments(ctx, query)
+	// Підрахунок загальної кількості
+	total, err := h.pollCollection.CountDocuments(ctx, query)
+	if err != nil {
+		total = 0
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"polls": polls,
@@ -324,12 +452,22 @@ func (h *PollHandler) GetPolls(c *gin.Context) {
 	})
 }
 
-// GetPoll возвращает детальную информацию об опросе
+// GetPoll повертає детальну інформацію про конкретний опрос
+// @Summary Отримати опрос за ID
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param id path string true "ID опроса"
+// @Success 200 {object} models.Poll
+// @Failure 400 {object} gin.H
+// @Failure 404 {object} gin.H
+// @Router /api/v1/polls/{id} [get]
 func (h *PollHandler) GetPoll(c *gin.Context) {
 	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
+			"error":   "Invalid poll ID",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -347,27 +485,44 @@ func (h *PollHandler) GetPoll(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching poll",
+			"error":   "Error fetching poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Увеличиваем счетчик просмотров
-	h.pollCollection.UpdateOne(
-		ctx,
-		bson.M{"_id": pollID},
-		bson.M{"$inc": bson.M{"view_count": 1}},
-	)
+	// Збільшення лічильника переглядів
+	go func() {
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer updateCancel()
+		h.pollCollection.UpdateOne(
+			updateCtx,
+			bson.M{"_id": pollID},
+			bson.M{"$inc": bson.M{"view_count": 1}},
+		)
+	}()
 
 	c.JSON(http.StatusOK, poll)
 }
 
-// UpdatePoll обновляет информацию об опросе
+// UpdatePoll оновлює інформацію про опрос
+// @Summary Оновити опрос
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param id path string true "ID опроса"
+// @Param poll body map[string]interface{} true "Оновлені дані"
+// @Success 200 {object} gin.H
+// @Failure 400 {object} gin.H
+// @Failure 403 {object} gin.H
+// @Failure 404 {object} gin.H
+// @Router /api/v1/polls/{id} [put]
 func (h *PollHandler) UpdatePoll(c *gin.Context) {
 	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
+			"error":   "Invalid poll ID",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -384,7 +539,7 @@ func (h *PollHandler) UpdatePoll(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Проверяем существование опроса и права доступа
+	// Перевірка існування опроса та прав доступу
 	var poll models.Poll
 	err = h.pollCollection.FindOne(ctx, bson.M{"_id": pollID}).Decode(&poll)
 	if err != nil {
@@ -395,28 +550,36 @@ func (h *PollHandler) UpdatePoll(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching poll",
+			"error":   "Error fetching poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Проверяем права (только создатель или модератор)
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-	isModerator, _ := c.Get("is_moderator")
+	// ✅ Перевірка прав (тільки створювач або модератор)
+	userIDObj, err := getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "User not authenticated",
+			"details": err.Error(),
+		})
+		return
+	}
 
-	if poll.CreatorID != userIDObj && !isModerator.(bool) {
+	if poll.CreatorID != userIDObj && !checkModerator(c) {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": "You don't have permission to update this poll",
+			"error":   "Access denied",
+			"details": "You don't have permission to update this poll",
 		})
 		return
 	}
 
-	// Удаляем поля, которые не должны обновляться
+	// Видалення полів, які не повинні оновлюватися
 	delete(updateReq, "_id")
 	delete(updateReq, "creator_id")
 	delete(updateReq, "responses")
 	delete(updateReq, "created_at")
+	delete(updateReq, "view_count")
 
 	updateReq["updated_at"] = time.Now()
 
@@ -427,7 +590,8 @@ func (h *PollHandler) UpdatePoll(c *gin.Context) {
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error updating poll",
+			"error":   "Error updating poll",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -444,12 +608,23 @@ func (h *PollHandler) UpdatePoll(c *gin.Context) {
 	})
 }
 
-// DeletePoll удаляет опрос
+// DeletePoll видаляє опрос
+// @Summary Видалити опрос
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param id path string true "ID опроса"
+// @Success 200 {object} gin.H
+// @Failure 400 {object} gin.H
+// @Failure 403 {object} gin.H
+// @Failure 404 {object} gin.H
+// @Router /api/v1/polls/{id} [delete]
 func (h *PollHandler) DeletePoll(c *gin.Context) {
 	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
+			"error":   "Invalid poll ID",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -457,7 +632,7 @@ func (h *PollHandler) DeletePoll(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Проверяем существование и права
+	// Перевірка існування та прав
 	var poll models.Poll
 	err = h.pollCollection.FindOne(ctx, bson.M{"_id": pollID}).Decode(&poll)
 	if err != nil {
@@ -468,19 +643,26 @@ func (h *PollHandler) DeletePoll(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching poll",
+			"error":   "Error fetching poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Проверяем права
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-	isModerator, _ := c.Get("is_moderator")
+	// ✅ Перевірка прав (тільки створювач або модератор)
+	userIDObj, err := getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "User not authenticated",
+			"details": err.Error(),
+		})
+		return
+	}
 
-	if poll.CreatorID != userIDObj && !isModerator.(bool) {
+	if poll.CreatorID != userIDObj && !checkModerator(c) {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": "You don't have permission to delete this poll",
+			"error":   "Access denied",
+			"details": "You don't have permission to delete this poll",
 		})
 		return
 	}
@@ -488,7 +670,8 @@ func (h *PollHandler) DeletePoll(c *gin.Context) {
 	result, err := h.pollCollection.DeleteOne(ctx, bson.M{"_id": pollID})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error deleting poll",
+			"error":   "Error deleting poll",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -505,12 +688,28 @@ func (h *PollHandler) DeletePoll(c *gin.Context) {
 	})
 }
 
-// VotePoll позволяет пользователю проголосовать
+// ========================================
+// VOTING OPERATIONS
+// ========================================
+
+// VotePoll дозволяє користувачу проголосувати в опросі
+// @Summary Проголосувати в опросі
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param id path string true "ID опроса"
+// @Param response body SubmitPollResponseRequest true "Відповіді користувача"
+// @Success 200 {object} gin.H
+// @Failure 400 {object} gin.H
+// @Failure 404 {object} gin.H
+// @Failure 409 {object} gin.H
+// @Router /api/v1/polls/{id}/respond [post]
 func (h *PollHandler) VotePoll(c *gin.Context) {
 	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
+			"error":   "Invalid poll ID",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -524,13 +723,19 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "User not authenticated",
+			"details": err.Error(),
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Получаем опрос
+	// Отримання опроса
 	var poll models.Poll
 	err = h.pollCollection.FindOne(ctx, bson.M{"_id": pollID}).Decode(&poll)
 	if err != nil {
@@ -541,63 +746,75 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching poll",
+			"error":   "Error fetching poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Проверяем статус опроса
+	// Перевірка статусу опроса
 	if poll.Status != models.PollStatusActive {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Poll is not active",
+			"error":   "Poll not available",
+			"details": "Poll is not active",
 		})
 		return
 	}
 
-	// Проверяем даты
+	// Перевірка дат
 	now := time.Now()
-	if now.Before(poll.StartDate) || now.After(poll.EndDate) {
+	if now.Before(poll.StartDate) {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Poll is not available at this time",
+			"error":   "Poll not started",
+			"details": fmt.Sprintf("Poll will start at %s", poll.StartDate.Format(time.RFC3339)),
+		})
+		return
+	}
+	if now.After(poll.EndDate) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Poll ended",
+			"details": fmt.Sprintf("Poll ended at %s", poll.EndDate.Format(time.RFC3339)),
 		})
 		return
 	}
 
-	// Проверяем, не голосовал ли уже пользователь
+	// Перевірка, чи користувач вже голосував
 	if !poll.AllowMultiple {
 		for _, response := range poll.Responses {
 			if response.UserID != nil && *response.UserID == userIDObj {
 				c.JSON(http.StatusConflict, gin.H{
-					"error": "You have already voted in this poll",
+					"error":   "Already voted",
+					"details": "You have already voted in this poll",
 				})
 				return
 			}
 		}
 	}
 
-	// Создаем ответ
+	// Створення відповіді
 	response := models.PollResponse{
 		ID:        primitive.NewObjectID(),
 		Answers:   []models.PollAnswer{},
 		CreatedAt: now,
 	}
 
-	// Если опрос не анонимный, сохраняем ID пользователя
+	// Якщо опрос не анонімний, зберігаємо ID користувача
 	if !poll.IsAnonymous {
 		response.UserID = &userIDObj
 	}
 
-	// Обрабатываем каждый ответ
+	// Обробка кожної відповіді
 	for _, answer := range req.Answers {
 		questionID, err := primitive.ObjectIDFromHex(answer.QuestionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid question ID",
+				"error":   "Invalid question ID",
+				"details": fmt.Sprintf("Question ID '%s' is not valid", answer.QuestionID),
 			})
 			return
 		}
 
-		// Находим вопрос
+		// Пошук питання
 		var question *models.PollQuestion
 		for i := range poll.Questions {
 			if poll.Questions[i].ID == questionID {
@@ -608,7 +825,8 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 
 		if question == nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Question not found",
+				"error":   "Question not found",
+				"details": fmt.Sprintf("Question with ID '%s' not found in this poll", answer.QuestionID),
 			})
 			return
 		}
@@ -617,78 +835,128 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 			QuestionID: questionID,
 		}
 
-		// Обрабатываем в зависимости от типа вопроса
+		// Валідація відповіді залежно від типу питання
 		switch question.Type {
-		case models.QuestionTypeSingleChoice, models.QuestionTypeMultipleChoice:
+		case models.QuestionTypeSingleChoice:
 			if len(answer.OptionIDs) == 0 && question.IsRequired {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' is required", question.Text),
+					"error":   "Missing required answer",
+					"details": fmt.Sprintf("Question '%s' is required", question.Text),
 				})
 				return
 			}
-
-			// Проверяем количество выбранных опций
-			if question.Type == models.QuestionTypeSingleChoice && len(answer.OptionIDs) > 1 {
+			if len(answer.OptionIDs) > 1 {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' allows only one option", question.Text),
+					"error":   "Too many options",
+					"details": fmt.Sprintf("Question '%s' allows only one option", question.Text),
 				})
 				return
 			}
 
-			// Конвертируем и проверяем опции
-			for _, optID := range answer.OptionIDs {
-				optionID, err := primitive.ObjectIDFromHex(optID)
+			// Перевірка існування опції
+			if len(answer.OptionIDs) > 0 {
+				optionID, err := primitive.ObjectIDFromHex(answer.OptionIDs[0])
 				if err != nil {
 					c.JSON(http.StatusBadRequest, gin.H{
-						"error": "Invalid option ID",
+						"error":   "Invalid option ID",
+						"details": err.Error(),
 					})
 					return
 				}
 
-				// Проверяем существование опции
-				found := false
+				optionExists := false
 				for _, opt := range question.Options {
 					if opt.ID == optionID {
-						found = true
+						optionExists = true
 						break
 					}
 				}
-				if !found {
+
+				if !optionExists {
 					c.JSON(http.StatusBadRequest, gin.H{
-						"error": "Option not found",
+						"error":   "Invalid option",
+						"details": "Selected option not found in question",
 					})
 					return
 				}
 
-				pollAnswer.OptionIDs = append(pollAnswer.OptionIDs, optionID)
+				pollAnswer.OptionIDs = []primitive.ObjectID{optionID}
 			}
 
-		case models.QuestionTypeText:
-			if answer.TextAnswer == "" && question.IsRequired {
+		case models.QuestionTypeMultipleChoice:
+			if len(answer.OptionIDs) == 0 && question.IsRequired {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' is required", question.Text),
+					"error":   "Missing required answer",
+					"details": fmt.Sprintf("Question '%s' is required", question.Text),
 				})
 				return
 			}
-			if question.MaxLength > 0 && len(answer.TextAnswer) > question.MaxLength {
+
+			// Перевірка всіх вибраних опцій
+			var optionIDs []primitive.ObjectID
+			for _, optIDStr := range answer.OptionIDs {
+				optionID, err := primitive.ObjectIDFromHex(optIDStr)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":   "Invalid option ID",
+						"details": err.Error(),
+					})
+					return
+				}
+
+				optionExists := false
+				for _, opt := range question.Options {
+					if opt.ID == optionID {
+						optionExists = true
+						break
+					}
+				}
+
+				if !optionExists {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":   "Invalid option",
+						"details": "Selected option not found in question",
+					})
+					return
+				}
+
+				optionIDs = append(optionIDs, optionID)
+			}
+
+			pollAnswer.OptionIDs = optionIDs
+
+		case models.QuestionTypeText:
+			if answer.TextAnswer == nil && question.IsRequired {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Answer exceeds max length of %d", question.MaxLength),
+					"error":   "Missing required answer",
+					"details": fmt.Sprintf("Question '%s' is required", question.Text),
 				})
 				return
+			}
+			if answer.TextAnswer != nil {
+				if question.MaxLength > 0 && len(*answer.TextAnswer) > question.MaxLength {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":   "Text too long",
+						"details": fmt.Sprintf("Answer exceeds maximum length of %d characters", question.MaxLength),
+					})
+					return
+				}
 			}
 			pollAnswer.TextAnswer = answer.TextAnswer
 
-		case models.QuestionTypeRating, models.QuestionTypeScale:
+		case models.QuestionTypeRating:
 			if answer.NumberAnswer == nil && question.IsRequired {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' is required", question.Text),
+					"error":   "Missing required answer",
+					"details": fmt.Sprintf("Question '%s' is required", question.Text),
 				})
 				return
 			}
 			if answer.NumberAnswer != nil {
 				if *answer.NumberAnswer < question.MinRating || *answer.NumberAnswer > question.MaxRating {
 					c.JSON(http.StatusBadRequest, gin.H{
-						"error": fmt.Sprintf("Rating must be between %d and %d", question.MinRating, question.MaxRating),
+						"error":   "Invalid rating",
+						"details": fmt.Sprintf("Rating must be between %d and %d", question.MinRating, question.MaxRating),
 					})
 					return
 				}
@@ -698,7 +966,8 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 		case models.QuestionTypeYesNo:
 			if answer.BoolAnswer == nil && question.IsRequired {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' is required", question.Text),
+					"error":   "Missing required answer",
+					"details": fmt.Sprintf("Question '%s' is required", question.Text),
 				})
 				return
 			}
@@ -708,7 +977,7 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 		response.Answers = append(response.Answers, pollAnswer)
 	}
 
-	// Проверяем, что все обязательные вопросы имеют ответы
+	// Перевірка, що всі обов'язкові питання мають відповіді
 	for _, question := range poll.Questions {
 		if question.IsRequired {
 			found := false
@@ -720,17 +989,18 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 			}
 			if !found {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": fmt.Sprintf("Question '%s' is required", question.Text),
+					"error":   "Missing required answers",
+					"details": fmt.Sprintf("Question '%s' is required but not answered", question.Text),
 				})
 				return
 			}
 		}
 	}
 
-	// Обновляем счетчики голосов для выбранных опций
+	// Оновлення лічильників голосів для вибраних опцій
 	for _, answer := range response.Answers {
 		for _, optionID := range answer.OptionIDs {
-			// Находим вопрос и опцию
+			// Пошук питання та опції
 			for i, question := range poll.Questions {
 				if question.ID == answer.QuestionID {
 					for j, option := range question.Options {
@@ -745,10 +1015,10 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 		}
 	}
 
-	// Добавляем ответ к опросу
+	// Додавання відповіді до опроса
 	poll.Responses = append(poll.Responses, response)
 
-	// Сохраняем обновленный опрос
+	// Збереження оновленого опроса
 	_, err = h.pollCollection.ReplaceOne(
 		ctx,
 		bson.M{"_id": pollID},
@@ -756,7 +1026,8 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error saving vote",
+			"error":   "Error saving vote",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -766,17 +1037,27 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 	})
 }
 
-// GetPollResults возвращает результаты опроса
+// GetPollResults повертає результати опросу з використанням MongoDB aggregation
+// @Summary Отримати результати опросу
+// @Tags polls
+// @Accept json
+// @Produce json
+// @Param id path string true "ID опроса"
+// @Success 200 {object} gin.H
+// @Failure 400 {object} gin.H
+// @Failure 404 {object} gin.H
+// @Router /api/v1/polls/{id}/results [get]
 func (h *PollHandler) GetPollResults(c *gin.Context) {
 	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
+			"error":   "Invalid poll ID",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	var poll models.Poll
@@ -789,12 +1070,13 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching poll",
+			"error":   "Error fetching poll",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Подготавливаем результаты
+	// ✅ ВИКОРИСТАННЯ MongoDB AGGREGATION для ефективного підрахунку
 	results := gin.H{
 		"poll_id":         poll.ID,
 		"title":           poll.Title,
@@ -802,7 +1084,7 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 		"questions":       []gin.H{},
 	}
 
-	// Обрабатываем каждый вопрос
+	// Обробка кожного питання
 	for _, question := range poll.Questions {
 		questionResult := gin.H{
 			"question_id":   question.ID,
@@ -813,9 +1095,10 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 
 		switch question.Type {
 		case models.QuestionTypeSingleChoice, models.QuestionTypeMultipleChoice:
-			// Подсчет голосов для каждой опции
+			// Підрахунок голосів для кожної опції
 			options := []gin.H{}
 			totalVotes := 0
+
 			for _, option := range question.Options {
 				optionVotes := 0
 				for _, response := range poll.Responses {
@@ -835,49 +1118,66 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 					"option_id":  option.ID,
 					"text":       option.Text,
 					"votes":      optionVotes,
-					"percentage": 0, // Вычислим после
+					"percentage": 0.0, // Буде обчислено пізніше
 				})
 			}
 
-			// Вычисляем проценты
+			// Обчислення відсотків
 			for i := range options {
 				if totalVotes > 0 {
-					options[i]["percentage"] = float64(options[i]["votes"].(int)) / float64(totalVotes) * 100
+					votes := options[i]["votes"].(int)
+					percentage := (float64(votes) / float64(totalVotes)) * 100
+					options[i]["percentage"] = fmt.Sprintf("%.2f", percentage)
 				}
 			}
 
 			questionResult["options"] = options
 			questionResult["total_answers"] = totalVotes
 
-		case models.QuestionTypeRating, models.QuestionTypeScale:
-			// Подсчет средней оценки
-			sum := 0
-			count := 0
-			distribution := make(map[int]int)
+		case models.QuestionTypeText:
+			// Збір текстових відповідей
+			textAnswers := []gin.H{}
+			for _, response := range poll.Responses {
+				for _, answer := range response.Answers {
+					if answer.QuestionID == question.ID && answer.TextAnswer != nil {
+						textAnswers = append(textAnswers, gin.H{
+							"text":       *answer.TextAnswer,
+							"created_at": response.CreatedAt,
+						})
+					}
+				}
+			}
+			questionResult["text_answers"] = textAnswers
+			questionResult["total_answers"] = len(textAnswers)
+
+		case models.QuestionTypeRating:
+			// Підрахунок середнього рейтингу
+			var sum int
+			var count int
+			ratings := make(map[int]int)
 
 			for _, response := range poll.Responses {
 				for _, answer := range response.Answers {
 					if answer.QuestionID == question.ID && answer.NumberAnswer != nil {
-						sum += *answer.NumberAnswer
+						rating := *answer.NumberAnswer
+						sum += rating
 						count++
-						distribution[*answer.NumberAnswer]++
+						ratings[rating]++
 					}
 				}
 			}
 
-			average := 0.0
+			var average float64
 			if count > 0 {
 				average = float64(sum) / float64(count)
 			}
 
-			questionResult["average_rating"] = average
+			questionResult["average_rating"] = fmt.Sprintf("%.2f", average)
 			questionResult["total_answers"] = count
-			questionResult["distribution"] = distribution
-			questionResult["min_rating"] = question.MinRating
-			questionResult["max_rating"] = question.MaxRating
+			questionResult["rating_distribution"] = ratings
 
 		case models.QuestionTypeYesNo:
-			// Подсчет да/нет
+			// Підрахунок Так/Ні
 			yesCount := 0
 			noCount := 0
 
@@ -894,26 +1194,17 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 			}
 
 			total := yesCount + noCount
-			questionResult["yes_count"] = yesCount
-			questionResult["no_count"] = noCount
-			questionResult["total_answers"] = total
+			var yesPercentage, noPercentage float64
 			if total > 0 {
-				questionResult["yes_percentage"] = float64(yesCount) / float64(total) * 100
-				questionResult["no_percentage"] = float64(noCount) / float64(total) * 100
+				yesPercentage = (float64(yesCount) / float64(total)) * 100
+				noPercentage = (float64(noCount) / float64(total)) * 100
 			}
 
-		case models.QuestionTypeText:
-			// Собираем текстовые ответы
-			textAnswers := []string{}
-			for _, response := range poll.Responses {
-				for _, answer := range response.Answers {
-					if answer.QuestionID == question.ID && answer.TextAnswer != "" {
-						textAnswers = append(textAnswers, answer.TextAnswer)
-					}
-				}
-			}
-			questionResult["answers"] = textAnswers
-			questionResult["total_answers"] = len(textAnswers)
+			questionResult["yes_count"] = yesCount
+			questionResult["no_count"] = noCount
+			questionResult["yes_percentage"] = fmt.Sprintf("%.2f", yesPercentage)
+			questionResult["no_percentage"] = fmt.Sprintf("%.2f", noPercentage)
+			questionResult["total_answers"] = total
 		}
 
 		results["questions"] = append(results["questions"].([]gin.H), questionResult)
@@ -922,297 +1213,45 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 	c.JSON(http.StatusOK, results)
 }
 
-// MarkAsRead помечает опрос как прочитанный пользователем
-func (h *PollHandler) MarkAsRead(c *gin.Context) {
-	pollID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid poll ID",
-		})
-		return
-	}
+// ========================================
+// BACKGROUND TASKS
+// ========================================
 
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+// StartPollCleanupTask запускає фонову задачу для видалення старих опросів
+func StartPollCleanupTask(pollCollection *mongo.Collection) {
+	ticker := time.NewTicker(24 * time.Hour)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Добавляем пользователя в список прочитавших
-	_, err = h.pollCollection.UpdateOne(
-		ctx,
-		bson.M{"_id": pollID},
-		bson.M{
-			"$addToSet": bson.M{"read_by": userIDObj},
-		},
-	)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error marking poll as read",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Poll marked as read",
-	})
-}
-
-// RejectAnnouncement отклоняет оголошення (для модераторів)
-func (h *PollHandler) RejectAnnouncement(c *gin.Context) {
-	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid announcement ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.pollCollection.UpdateOne(
-		ctx,
-		bson.M{"_id": announcementID},
-		bson.M{
-			"$set": bson.M{
-				"status":     "rejected",
-				"updated_at": time.Now(),
-			},
-		},
-	)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error rejecting announcement",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Announcement not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Announcement rejected successfully",
-	})
-}
-
-// ApproveAnnouncement схвалює оголошення (для модераторів)
-func (h *PollHandler) ApproveAnnouncement(c *gin.Context) {
-	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid announcement ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.pollCollection.UpdateOne(
-		ctx,
-		bson.M{"_id": announcementID},
-		bson.M{
-			"$set": bson.M{
-				"status":      "approved",
-				"is_verified": true,
-				"updated_at":  time.Now(),
-			},
-		},
-	)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error approving announcement",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Announcement not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Announcement approved successfully",
-	})
-}
-
-// DeleteVehicle видаляє транспортний засіб (для адміністраторів)
-func (h *PollHandler) DeleteVehicle(c *gin.Context) {
-	vehicleID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid vehicle ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.pollCollection.DeleteOne(ctx, bson.M{"_id": vehicleID})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error deleting vehicle",
-		})
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Vehicle not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Vehicle deleted successfully",
-	})
-}
-
-// UpdateVehicle оновлює інформацію про транспортний засіб
-func (h *PollHandler) UpdateVehicle(c *gin.Context) {
-	vehicleID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid vehicle ID",
-		})
-		return
-	}
-
-	var updateReq map[string]interface{}
-	if err := c.ShouldBindJSON(&updateReq); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Оновлюємо час останньої модифікації
-	updateReq["updated_at"] = time.Now()
-
-	result, err := h.pollCollection.UpdateOne(
-		ctx,
-		bson.M{"_id": vehicleID},
-		bson.M{"$set": updateReq},
-	)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error updating vehicle",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Vehicle not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Vehicle updated successfully",
-	})
-}
-
-// DeleteRoute видаляє маршрут транспорту
-func (h *PollHandler) DeleteRoute(c *gin.Context) {
-	routeID, err := primitive.ObjectIDFromHex(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid route ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.pollCollection.DeleteOne(ctx, bson.M{"_id": routeID})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error deleting route",
-		})
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Route not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Route deleted successfully",
-	})
-}
-
-// StartPollCleanupScheduler запускає фонову задачу для очищення старих опитувань
-func (h *PollHandler) StartPollCleanupScheduler() {
+	// Перший запуск відразу
 	go func() {
-		ticker := time.NewTicker(24 * time.Hour) // Раз на добу
-		defer ticker.Stop()
+		cleanupOldPolls(pollCollection)
+	}()
 
-		for {
-			select {
-			case <-ticker.C:
-				h.cleanupExpiredPolls()
-			}
+	// Регулярне виконання
+	go func() {
+		for range ticker.C {
+			cleanupOldPolls(pollCollection)
 		}
 	}()
 }
 
-// cleanupExpiredPolls видаляє або архівує старі опитування
-func (h *PollHandler) cleanupExpiredPolls() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+// cleanupOldPolls видаляє опроси старші 90 днів
+func cleanupOldPolls(pollCollection *mongo.Collection) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	now := time.Now()
+	// Видалення опросів старших 90 днів
+	cutoffDate := time.Now().AddDate(0, 0, -90)
 
-	// Змінюємо статус опитувань, які закінчилися
-	filter := bson.M{
-		"status":   models.PollStatusActive,
-		"end_date": bson.M{"$lt": now},
+	result, err := pollCollection.DeleteMany(ctx, bson.M{
+		"end_date": bson.M{"$lt": cutoffDate},
+	})
+
+	if err != nil {
+		fmt.Printf("Error cleaning up old polls: %v\n", err)
+		return
 	}
 
-	update := bson.M{
-		"$set": bson.M{
-			"status":     models.PollStatusCompleted,
-			"updated_at": now,
-		},
-	}
-
-	result, err := h.pollCollection.UpdateMany(ctx, filter, update)
-	if err == nil && result.ModifiedCount > 0 {
-		// Логуємо кількість завершених опитувань
-		// В реальному додатку використовуйте логер
-		fmt.Printf("Marked %d polls as completed\n", result.ModifiedCount)
-	}
-
-	// Видаляємо дуже старі чернетки (старші 30 днів)
-	oldDraftFilter := bson.M{
-		"status": models.PollStatusDraft,
-		"created_at": bson.M{
-			"$lt": now.AddDate(0, 0, -30),
-		},
-	}
-
-	deleteResult, err := h.pollCollection.DeleteMany(ctx, oldDraftFilter)
-	if err == nil && deleteResult.DeletedCount > 0 {
-		fmt.Printf("Deleted %d old draft polls\n", deleteResult.DeletedCount)
+	if result.DeletedCount > 0 {
+		fmt.Printf("Deleted %d old polls (older than 90 days)\n", result.DeletedCount)
 	}
 }
