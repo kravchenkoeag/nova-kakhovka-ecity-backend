@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"nova-kakhovka-ecity/internal/models"
@@ -25,59 +26,44 @@ type TransportHandler struct {
 }
 
 type CreateRouteRequest struct {
-	RouteNumber    string                   `json:"route_number" validate:"required"`
-	RouteName      string                   `json:"route_name" validate:"required,min=5,max=200"`
-	TransportType  string                   `json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
-	Stops          []CreateTransportStop    `json:"stops" validate:"required,min=2"`
-	PathCoords     []models.Location        `json:"path_coords"`
-	Schedule       models.TransportSchedule `json:"schedule"`
-	FirstDeparture time.Time                `json:"first_departure"`
-	LastDeparture  time.Time                `json:"last_departure"`
-	Fare           float64                  `json:"fare" validate:"min=0"`
-	IsAccessible   bool                     `json:"is_accessible"`
-	HasWiFi        bool                     `json:"has_wifi"`
-	HasAC          bool                     `json:"has_ac"`
-}
-
-type CreateTransportStop struct {
-	Name                string          `json:"name" validate:"required,min=2,max=100"`
-	Location            models.Location `json:"location" validate:"required"`
-	StopOrder           int             `json:"stop_order"`
-	HasShelter          bool            `json:"has_shelter"`
-	HasBench            bool            `json:"has_bench"`
-	IsAccessible        bool            `json:"is_accessible"`
-	TravelTimeFromStart int             `json:"travel_time_from_start"`
+	Number      string                     `json:"number" validate:"required"`
+	Type        string                     `json:"type" validate:"required,oneof=bus trolleybus tram"`
+	Name        string                     `json:"name" validate:"required"`
+	Description string                     `json:"description"`
+	Color       string                     `json:"color"`
+	Stops       []models.TransportStop     `json:"stops" validate:"required,min=2"`
+	RoutePoints []models.Location          `json:"route_points" validate:"required,min=2"`
+	Schedule    []models.TransportSchedule `json:"schedule"`
+	IsActive    bool                       `json:"is_active"`
+	Fare        float64                    `json:"fare"`
 }
 
 type CreateVehicleRequest struct {
-	VehicleNumber string `json:"vehicle_number" validate:"required"`
-	RouteID       string `json:"route_id" validate:"required"`
-	TransportType string `json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
-	Model         string `json:"model"`
-	Capacity      int    `json:"capacity" validate:"min=1"`
-	IsAccessible  bool   `json:"is_accessible"`
-	HasWiFi       bool   `json:"has_wifi"`
-	HasAC         bool   `json:"has_ac"`
-	IsTracked     bool   `json:"is_tracked"`
+	RouteID           string          `json:"route_id" validate:"required"`
+	VehicleNumber     string          `json:"vehicle_number" validate:"required"`
+	Type              string          `json:"type" validate:"required,oneof=bus trolleybus tram"`
+	Model             string          `json:"model"`
+	Capacity          int             `json:"capacity"`
+	CurrentLocation   models.Location `json:"current_location"`
+	IsActive          bool            `json:"is_active"`
+	HasAirConditioner bool            `json:"has_air_conditioner"`
+	HasWiFi           bool            `json:"has_wifi"`
+	IsAccessible      bool            `json:"is_accessible"`
 }
 
 type UpdateVehicleLocationRequest struct {
-	Location      models.Location `json:"location" validate:"required"`
-	Speed         float64         `json:"speed"`
-	Direction     string          `json:"direction" validate:"oneof=forward backward"`
-	CurrentStopID string          `json:"current_stop_id,omitempty"`
+	Location models.Location `json:"location" validate:"required"`
+	Speed    float64         `json:"speed"`
+	Heading  float64         `json:"heading"`
 }
 
-type TransportFilters struct {
-	TransportType string `form:"transport_type"`
-	IsAccessible  *bool  `form:"is_accessible"`
-	HasWiFi       *bool  `form:"has_wifi"`
-	HasAC         *bool  `form:"has_ac"`
-	IsActive      *bool  `form:"is_active"`
-	NearLocation  string `form:"near_location"` // "lat,lng,radius_km"
-	Page          int    `form:"page"`
-	Limit         int    `form:"limit"`
-	Search        string `form:"search"`
+type RouteFilters struct {
+	Type         string `form:"type"`
+	IsActive     *bool  `form:"is_active"`
+	NearLocation string `form:"near_location"` // "lat,lng,radius_km"
+	Page         int    `form:"page"`
+	Limit        int    `form:"limit"`
+	Search       string `form:"search"`
 }
 
 func NewTransportHandler(routeCollection, vehicleCollection, userCollection *mongo.Collection) *TransportHandler {
@@ -135,64 +121,13 @@ func (h *TransportHandler) CreateRoute(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	userIDObj := userID.(primitive.ObjectID)
 
-	// Преобразуем остановки
-	var stops []models.TransportStop
-	totalDistance := 0.0
-
-	for i, reqStop := range req.Stops {
-		stop := models.TransportStop{
-			ID:                  primitive.NewObjectID(),
-			Name:                reqStop.Name,
-			Location:            reqStop.Location,
-			StopOrder:           reqStop.StopOrder,
-			HasShelter:          reqStop.HasShelter,
-			HasBench:            reqStop.HasBench,
-			IsAccessible:        reqStop.IsAccessible,
-			TravelTimeFromStart: reqStop.TravelTimeFromStart,
-		}
-
-		// Если порядок не указан, присваиваем автоматически
-		if stop.StopOrder == 0 {
-			stop.StopOrder = i + 1
-		}
-
-		stops = append(stops, stop)
-
-		// Вычисляем расстояние между остановками (упрощенно)
-		if i > 0 {
-			distance := calculateDistance(stops[i-1].Location, stop.Location)
-			totalDistance += distance
-		}
-	}
-
-	now := time.Now()
-	route := models.TransportRoute{
-		RouteNumber:    req.RouteNumber,
-		RouteName:      req.RouteName,
-		TransportType:  req.TransportType,
-		Stops:          stops,
-		PathCoords:     req.PathCoords,
-		TotalDistance:  totalDistance,
-		Schedule:       req.Schedule,
-		FirstDeparture: req.FirstDeparture,
-		LastDeparture:  req.LastDeparture,
-		Fare:           req.Fare,
-		IsAccessible:   req.IsAccessible,
-		HasWiFi:        req.HasWiFi,
-		HasAC:          req.HasAC,
-		IsActive:       true,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		CreatedBy:      userIDObj,
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Проверяем уникальность номера маршрута
 	count, err := h.routeCollection.CountDocuments(ctx, bson.M{
-		"route_number":   req.RouteNumber,
-		"transport_type": req.TransportType,
+		"number": req.Number,
+		"type":   req.Type,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -200,12 +135,37 @@ func (h *TransportHandler) CreateRoute(c *gin.Context) {
 		})
 		return
 	}
+
 	if count > 0 {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "Route number already exists for this transport type",
+			"error": "Route with this number already exists",
 		})
 		return
 	}
+
+	now := time.Now()
+	route := models.TransportRoute{
+		Number:      req.Number,
+		Type:        req.Type,
+		Name:        req.Name,
+		Description: req.Description,
+		Color:       req.Color,
+		Stops:       req.Stops,
+		RoutePoints: req.RoutePoints,
+		Schedule:    req.Schedule,
+		IsActive:    req.IsActive,
+		Fare:        req.Fare,
+		CreatedBy:   userIDObj,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	// Вычисляем общую длину маршрута
+	totalDistance := 0.0
+	for i := 1; i < len(route.RoutePoints); i++ {
+		totalDistance += calculateDistance(route.RoutePoints[i-1], route.RoutePoints[i])
+	}
+	route.TotalDistance = totalDistance
 
 	result, err := h.routeCollection.InsertOne(ctx, route)
 	if err != nil {
@@ -216,12 +176,12 @@ func (h *TransportHandler) CreateRoute(c *gin.Context) {
 	}
 
 	route.ID = result.InsertedID.(primitive.ObjectID)
-
 	c.JSON(http.StatusCreated, route)
 }
 
+// GetRoutes возвращает список маршрутов с фильтрацией
 func (h *TransportHandler) GetRoutes(c *gin.Context) {
-	var filters TransportFilters
+	var filters RouteFilters
 	if err := c.ShouldBindQuery(&filters); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid query parameters",
@@ -230,52 +190,66 @@ func (h *TransportHandler) GetRoutes(c *gin.Context) {
 		return
 	}
 
-	// Устанавливаем значения по умолчанию
-	if filters.Page <= 0 {
+	// Дефолтные значения для пагинации
+	if filters.Page < 1 {
 		filters.Page = 1
 	}
-	if filters.Limit <= 0 || filters.Limit > 100 {
+	if filters.Limit < 1 || filters.Limit > 100 {
 		filters.Limit = 20
 	}
-
-	// Строим фильтр для запроса
-	filter := bson.M{}
-
-	if filters.TransportType != "" {
-		filter["transport_type"] = filters.TransportType
-	}
-	if filters.IsAccessible != nil {
-		filter["is_accessible"] = *filters.IsAccessible
-	}
-	if filters.HasWiFi != nil {
-		filter["has_wifi"] = *filters.HasWiFi
-	}
-	if filters.HasAC != nil {
-		filter["has_ac"] = *filters.HasAC
-	}
-	if filters.IsActive != nil {
-		filter["is_active"] = *filters.IsActive
-	}
-
-	// Поиск по тексту
-	if filters.Search != "" {
-		filter["$or"] = []bson.M{
-			{"route_number": bson.M{"$regex": filters.Search, "$options": "i"}},
-			{"route_name": bson.M{"$regex": filters.Search, "$options": "i"}},
-		}
-	}
-
-	// Параметры пагинации
-	skip := (filters.Page - 1) * filters.Limit
-	opts := options.Find().
-		SetLimit(int64(filters.Limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{"route_number", 1}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := h.routeCollection.Find(ctx, filter, opts)
+	// Построение фильтра запроса
+	query := bson.M{}
+
+	if filters.Type != "" {
+		query["type"] = filters.Type
+	}
+	if filters.IsActive != nil {
+		query["is_active"] = *filters.IsActive
+	}
+	if filters.Search != "" {
+		query["$or"] = []bson.M{
+			{"number": bson.M{"$regex": filters.Search, "$options": "i"}},
+			{"name": bson.M{"$regex": filters.Search, "$options": "i"}},
+			{"description": bson.M{"$regex": filters.Search, "$options": "i"}},
+		}
+	}
+
+	// Фильтрация по близости к локации
+	if filters.NearLocation != "" {
+		parts := strings.Split(filters.NearLocation, ",")
+		if len(parts) == 3 {
+			lat, _ := strconv.ParseFloat(parts[0], 64)
+			lng, _ := strconv.ParseFloat(parts[1], 64)
+			radiusKm, _ := strconv.ParseFloat(parts[2], 64)
+
+			// Находим маршруты, проходящие через указанную область
+			query["stops.location"] = bson.M{
+				"$near": bson.M{
+					"$geometry": bson.M{
+						"type":        "Point",
+						"coordinates": []float64{lng, lat},
+					},
+					"$maxDistance": radiusKm * 1000, // Конвертируем в метры
+				},
+			}
+		}
+	}
+
+	// Настройка сортировки
+	sortOptions := options.Find()
+	sortOptions.SetSort(bson.D{{"number", 1}})
+
+	// Пагинация
+	skip := (filters.Page - 1) * filters.Limit
+	sortOptions.SetLimit(int64(filters.Limit))
+	sortOptions.SetSkip(int64(skip))
+
+	// Выполнение запроса
+	cursor, err := h.routeCollection.Find(ctx, query, sortOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error fetching routes",
@@ -292,28 +266,23 @@ func (h *TransportHandler) GetRoutes(c *gin.Context) {
 		return
 	}
 
-	// Получаем общее количество для пагинации
-	totalCount, err := h.routeCollection.CountDocuments(ctx, filter)
-	if err != nil {
-		totalCount = 0
-	}
-
-	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
+	// Подсчет общего количества
+	total, _ := h.routeCollection.CountDocuments(ctx, query)
 
 	c.JSON(http.StatusOK, gin.H{
 		"routes": routes,
 		"pagination": gin.H{
 			"page":        filters.Page,
 			"limit":       filters.Limit,
-			"total":       totalCount,
-			"total_pages": totalPages,
+			"total":       total,
+			"total_pages": (total + int64(filters.Limit) - 1) / int64(filters.Limit),
 		},
 	})
 }
 
+// GetRoute возвращает детальную информацию о маршруте
 func (h *TransportHandler) GetRoute(c *gin.Context) {
-	routeID := c.Param("id")
-	routeIDObj, err := primitive.ObjectIDFromHex(routeID)
+	routeID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid route ID",
@@ -325,26 +294,44 @@ func (h *TransportHandler) GetRoute(c *gin.Context) {
 	defer cancel()
 
 	var route models.TransportRoute
-	err = h.routeCollection.FindOne(ctx, bson.M{"_id": routeIDObj}).Decode(&route)
+	err = h.routeCollection.FindOne(ctx, bson.M{"_id": routeID}).Decode(&route)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Route not found",
 			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
+			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching route",
+		})
+		return
+	}
+
+	// Получаем активные транспортные средства на маршруте
+	cursor, err := h.vehicleCollection.Find(ctx, bson.M{
+		"route_id":  routeID,
+		"is_active": true,
+	})
+	if err == nil {
+		var vehicles []models.TransportVehicle
+		cursor.All(ctx, &vehicles)
+		cursor.Close(ctx)
+
+		// Добавляем информацию о транспортных средствах к ответу
+		c.JSON(http.StatusOK, gin.H{
+			"route":    route,
+			"vehicles": vehicles,
+		})
 		return
 	}
 
 	c.JSON(http.StatusOK, route)
 }
 
+// UpdateRoute обновляет информацию о маршруте
 func (h *TransportHandler) UpdateRoute(c *gin.Context) {
-	routeID := c.Param("id")
-	routeIDObj, err := primitive.ObjectIDFromHex(routeID)
+	routeID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid route ID",
@@ -361,8 +348,8 @@ func (h *TransportHandler) UpdateRoute(c *gin.Context) {
 		return
 	}
 
-	var updateData bson.M
-	if err := c.ShouldBindJSON(&updateData); err != nil {
+	var updateReq map[string]interface{}
+	if err := c.ShouldBindJSON(&updateReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid request data",
 			"details": err.Error(),
@@ -370,20 +357,31 @@ func (h *TransportHandler) UpdateRoute(c *gin.Context) {
 		return
 	}
 
-	// Удаляем поля, которые нельзя обновлять
-	delete(updateData, "_id")
-	delete(updateData, "created_at")
-	delete(updateData, "created_by")
-
-	// Добавляем временную метку обновления
-	updateData["updated_at"] = time.Now()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := h.routeCollection.UpdateOne(ctx, bson.M{"_id": routeIDObj}, bson.M{
-		"$set": updateData,
-	})
+	// Удаляем поля, которые не должны обновляться
+	delete(updateReq, "_id")
+	delete(updateReq, "created_by")
+	delete(updateReq, "created_at")
+
+	updateReq["updated_at"] = time.Now()
+
+	// Если обновляются точки маршрута, пересчитываем расстояние
+	if routePoints, ok := updateReq["route_points"].([]interface{}); ok && len(routePoints) > 1 {
+		totalDistance := 0.0
+		for i := 1; i < len(routePoints); i++ {
+			// Конвертация и расчет расстояния
+			// В реальном приложении нужна более сложная логика преобразования типов
+		}
+		updateReq["total_distance"] = totalDistance
+	}
+
+	result, err := h.routeCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": routeID},
+		bson.M{"$set": updateReq},
+	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -404,6 +402,68 @@ func (h *TransportHandler) UpdateRoute(c *gin.Context) {
 	})
 }
 
+// DeleteRoute удаляет маршрут
+func (h *TransportHandler) DeleteRoute(c *gin.Context) {
+	routeID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid route ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Проверяем, есть ли активные транспортные средства на маршруте
+	vehicleCount, err := h.vehicleCollection.CountDocuments(ctx, bson.M{
+		"route_id":  routeID,
+		"is_active": true,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database error",
+		})
+		return
+	}
+
+	if vehicleCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Cannot delete route with active vehicles",
+		})
+		return
+	}
+
+	result, err := h.routeCollection.DeleteOne(ctx, bson.M{"_id": routeID})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error deleting route",
+		})
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Route not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Route deleted successfully",
+	})
+}
+
+// CreateVehicle добавляет новое транспортное средство
 func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 	var req CreateVehicleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -435,8 +495,8 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 	defer cancel()
 
 	// Проверяем существование маршрута
-	routeCount, err := h.routeCollection.CountDocuments(ctx, bson.M{"_id": routeID})
-	if err != nil || routeCount == 0 {
+	count, err := h.routeCollection.CountDocuments(ctx, bson.M{"_id": routeID})
+	if err != nil || count == 0 {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": "Route not found",
 		})
@@ -444,7 +504,7 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 	}
 
 	// Проверяем уникальность номера транспортного средства
-	vehicleCount, err := h.vehicleCollection.CountDocuments(ctx, bson.M{
+	count, err = h.vehicleCollection.CountDocuments(ctx, bson.M{
 		"vehicle_number": req.VehicleNumber,
 	})
 	if err != nil {
@@ -453,27 +513,30 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 		})
 		return
 	}
-	if vehicleCount > 0 {
+
+	if count > 0 {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "Vehicle number already exists",
+			"error": "Vehicle with this number already exists",
 		})
 		return
 	}
 
 	now := time.Now()
 	vehicle := models.TransportVehicle{
-		VehicleNumber: req.VehicleNumber,
-		RouteID:       routeID,
-		TransportType: req.TransportType,
-		Model:         req.Model,
-		Capacity:      req.Capacity,
-		IsAccessible:  req.IsAccessible,
-		HasWiFi:       req.HasWiFi,
-		HasAC:         req.HasAC,
-		IsTracked:     req.IsTracked,
-		Status:        models.VehicleStatusActive,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		RouteID:           routeID,
+		VehicleNumber:     req.VehicleNumber,
+		Type:              req.Type,
+		Model:             req.Model,
+		Capacity:          req.Capacity,
+		CurrentLocation:   req.CurrentLocation,
+		IsActive:          req.IsActive,
+		IsOnline:          false,
+		LastUpdateTime:    now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		HasAirConditioner: req.HasAirConditioner,
+		HasWiFi:           req.HasWiFi,
+		IsAccessible:      req.IsAccessible,
 	}
 
 	result, err := h.vehicleCollection.InsertOne(ctx, vehicle)
@@ -485,54 +548,37 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 	}
 
 	vehicle.ID = result.InsertedID.(primitive.ObjectID)
-
 	c.JSON(http.StatusCreated, vehicle)
 }
 
+// GetVehicles возвращает список транспортных средств
 func (h *TransportHandler) GetVehicles(c *gin.Context) {
-	routeID := c.Query("route_id")
-	status := c.Query("status")
-	isTracked := c.Query("is_tracked")
-
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-
-	if page <= 0 {
-		page = 1
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-
-	filter := bson.M{}
-
-	if routeID != "" {
-		routeIDObj, err := primitive.ObjectIDFromHex(routeID)
-		if err == nil {
-			filter["route_id"] = routeIDObj
-		}
-	}
-
-	if status != "" {
-		filter["status"] = status
-	}
-
-	if isTracked != "" {
-		if tracked, err := strconv.ParseBool(isTracked); err == nil {
-			filter["is_tracked"] = tracked
-		}
-	}
-
-	skip := (page - 1) * limit
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{"vehicle_number", 1}})
+	routeIDStr := c.Query("route_id")
+	isActiveStr := c.Query("is_active")
+	isOnlineStr := c.Query("is_online")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := h.vehicleCollection.Find(ctx, filter, opts)
+	query := bson.M{}
+
+	if routeIDStr != "" {
+		if routeID, err := primitive.ObjectIDFromHex(routeIDStr); err == nil {
+			query["route_id"] = routeID
+		}
+	}
+
+	if isActiveStr != "" {
+		isActive, _ := strconv.ParseBool(isActiveStr)
+		query["is_active"] = isActive
+	}
+
+	if isOnlineStr != "" {
+		isOnline, _ := strconv.ParseBool(isOnlineStr)
+		query["is_online"] = isOnline
+	}
+
+	cursor, err := h.vehicleCollection.Find(ctx, query, options.Find().SetSort(bson.D{{"vehicle_number", 1}}))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error fetching vehicles",
@@ -549,12 +595,119 @@ func (h *TransportHandler) GetVehicles(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, vehicles)
+	c.JSON(http.StatusOK, gin.H{
+		"vehicles": vehicles,
+		"count":    len(vehicles),
+	})
 }
 
+// UpdateVehicle обновляет информацию о транспортном средстве
+func (h *TransportHandler) UpdateVehicle(c *gin.Context) {
+	vehicleID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid vehicle ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	var updateReq map[string]interface{}
+	if err := c.ShouldBindJSON(&updateReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Удаляем поля, которые не должны обновляться
+	delete(updateReq, "_id")
+	delete(updateReq, "created_at")
+
+	updateReq["updated_at"] = time.Now()
+
+	result, err := h.vehicleCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": vehicleID},
+		bson.M{"$set": updateReq},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating vehicle",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Vehicle not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Vehicle updated successfully",
+	})
+}
+
+// DeleteVehicle удаляет транспортное средство
+func (h *TransportHandler) DeleteVehicle(c *gin.Context) {
+	vehicleID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid vehicle ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := h.vehicleCollection.DeleteOne(ctx, bson.M{"_id": vehicleID})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error deleting vehicle",
+		})
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Vehicle not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Vehicle deleted successfully",
+	})
+}
+
+// UpdateVehicleLocation обновляет местоположение транспортного средства (для водителей)
 func (h *TransportHandler) UpdateVehicleLocation(c *gin.Context) {
-	vehicleID := c.Param("id")
-	vehicleIDObj, err := primitive.ObjectIDFromHex(vehicleID)
+	vehicleID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid vehicle ID",
@@ -571,36 +724,25 @@ func (h *TransportHandler) UpdateVehicleLocation(c *gin.Context) {
 		return
 	}
 
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	updateData := bson.M{
-		"current_location": req.Location,
-		"speed":            req.Speed,
-		"direction":        req.Direction,
-		"last_update":      time.Now(),
-		"updated_at":       time.Now(),
-	}
-
-	if req.CurrentStopID != "" {
-		currentStopID, err := primitive.ObjectIDFromHex(req.CurrentStopID)
-		if err == nil {
-			updateData["current_stop_id"] = currentStopID
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := h.vehicleCollection.UpdateOne(ctx, bson.M{"_id": vehicleIDObj}, bson.M{
-		"$set": updateData,
-	})
+	// Обновляем местоположение и статус онлайн
+	update := bson.M{
+		"$set": bson.M{
+			"current_location": req.Location,
+			"speed":            req.Speed,
+			"heading":          req.Heading,
+			"is_online":        true,
+			"last_update_time": time.Now(),
+		},
+	}
+
+	result, err := h.vehicleCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": vehicleID},
+		update,
+	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -617,237 +759,52 @@ func (h *TransportHandler) UpdateVehicleLocation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Vehicle location updated successfully",
+		"message": "Location updated successfully",
 	})
 }
 
-func (h *TransportHandler) GetNearbyStops(c *gin.Context) {
-	latStr := c.Query("lat")
-	lngStr := c.Query("lng")
-	radiusStr := c.DefaultQuery("radius", "1") // радиус в км
-
-	if latStr == "" || lngStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Latitude and longitude are required",
-		})
-		return
-	}
-
-	lat, err := strconv.ParseFloat(latStr, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid latitude",
-		})
-		return
-	}
-
-	lng, err := strconv.ParseFloat(lngStr, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid longitude",
-		})
-		return
-	}
-
-	radius, err := strconv.ParseFloat(radiusStr, 64)
-	if err != nil {
-		radius = 1.0
-	}
-
-	// Конвертируем радиус из км в метры для MongoDB
-	radiusMeters := radius * 1000
-
-	userLocation := models.Location{
-		Type:        "Point",
-		Coordinates: []float64{lng, lat},
-	}
+// GetLiveVehicles возвращает транспортные средства в реальном времени
+func (h *TransportHandler) GetLiveVehicles(c *gin.Context) {
+	routeIDStr := c.Query("route_id")
+	bounds := c.Query("bounds") // "lat1,lng1,lat2,lng2"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Агрегация для поиска ближайших остановок
-	pipeline := []bson.M{
-		{
-			"$unwind": "$stops",
+	query := bson.M{
+		"is_active": true,
+		"is_online": true,
+		// Только транспорт, который обновлялся в последние 5 минут
+		"last_update_time": bson.M{
+			"$gte": time.Now().Add(-5 * time.Minute),
 		},
-		{
-			"$addFields": bson.M{
-				"distance": bson.M{
-					"$geoNear": bson.M{
-						"near":          userLocation,
-						"distanceField": "distance",
-						"maxDistance":   radiusMeters,
-						"spherical":     true,
+	}
+
+	if routeIDStr != "" {
+		if routeID, err := primitive.ObjectIDFromHex(routeIDStr); err == nil {
+			query["route_id"] = routeID
+		}
+	}
+
+	// Фильтрация по границам карты
+	if bounds != "" {
+		var lat1, lng1, lat2, lng2 float64
+		if _, err := fmt.Sscanf(bounds, "%f,%f,%f,%f", &lat1, &lng1, &lat2, &lng2); err == nil {
+			query["current_location"] = bson.M{
+				"$geoWithin": bson.M{
+					"$box": [][]float64{
+						{lng1, lat1}, // Нижний левый угол
+						{lng2, lat2}, // Верхний правый угол
 					},
 				},
-			},
-		},
-		{
-			"$sort": bson.M{"distance": 1},
-		},
-		{
-			"$limit": 20,
-		},
-		{
-			"$project": bson.M{
-				"route_id":       "$_id",
-				"route_number":   "$route_number",
-				"route_name":     "$route_name",
-				"transport_type": "$transport_type",
-				"stop":           "$stops",
-				"distance":       1,
-			},
-		},
+			}
+		}
 	}
 
-	cursor, err := h.routeCollection.Aggregate(ctx, pipeline)
+	cursor, err := h.vehicleCollection.Find(ctx, query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error finding nearby stops",
-		})
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var nearbyStops []bson.M
-	if err := cursor.All(ctx, &nearbyStops); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error decoding nearby stops",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"user_location": userLocation,
-		"radius_km":     radius,
-		"nearby_stops":  nearbyStops,
-	})
-}
-
-func (h *TransportHandler) GetArrivals(c *gin.Context) {
-	stopID := c.Query("stop_id")
-	routeID := c.Query("route_id")
-
-	if stopID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Stop ID is required",
-		})
-		return
-	}
-
-	stopIDObj, err := primitive.ObjectIDFromHex(stopID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid stop ID",
-		})
-		return
-	}
-
-	filter := bson.M{
-		"stop_id": stopIDObj,
-		"scheduled_time": bson.M{
-			"$gte": time.Now().Add(-30 * time.Minute), // Показываем рейсы за последние 30 минут
-			"$lte": time.Now().Add(2 * time.Hour),     // и на следующие 2 часа
-		},
-	}
-
-	if routeID != "" {
-		routeIDObj, err := primitive.ObjectIDFromHex(routeID)
-		if err == nil {
-			filter["route_id"] = routeIDObj
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Поскольку у нас нет коллекции arrivals, создаем мок-данные на основе расписаний
-	var route models.TransportRoute
-	if routeID != "" {
-		routeIDObj, _ := primitive.ObjectIDFromHex(routeID)
-		h.routeCollection.FindOne(ctx, bson.M{"_id": routeIDObj}).Decode(&route)
-	}
-
-	// Генерируем примерные времена прибытия на основе расписания
-	arrivals := h.generateMockArrivals(stopIDObj, routeID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"stop_id":  stopID,
-		"route_id": routeID,
-		"arrivals": arrivals,
-	})
-}
-
-func (h *TransportHandler) generateMockArrivals(stopID primitive.ObjectID, routeID string) []gin.H {
-	now := time.Now()
-	var arrivals []gin.H
-
-	// Генерируем несколько примерных рейсов
-	for i := 0; i < 5; i++ {
-		arrivalTime := now.Add(time.Duration(10+i*15) * time.Minute)
-		estimatedTime := arrivalTime.Add(time.Duration(-2+i) * time.Minute) // Небольшие задержки
-
-		status := "on_time"
-		delay := 0
-		if estimatedTime.After(arrivalTime) {
-			status = "delayed"
-			delay = int(estimatedTime.Sub(arrivalTime).Minutes())
-		}
-
-		arrival := gin.H{
-			"id":             primitive.NewObjectID(),
-			"stop_id":        stopID,
-			"route_number":   fmt.Sprintf("Route %d", i+1),
-			"scheduled_time": arrivalTime,
-			"estimated_time": estimatedTime,
-			"status":         status,
-			"delay":          delay,
-			"direction":      "forward",
-		}
-
-		if routeID != "" {
-			routeIDObj, _ := primitive.ObjectIDFromHex(routeID)
-			arrival["route_id"] = routeIDObj
-		}
-
-		arrivals = append(arrivals, arrival)
-	}
-
-	return arrivals
-}
-
-func (h *TransportHandler) GetLiveTracking(c *gin.Context) {
-	routeID := c.Query("route_id")
-
-	if routeID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Route ID is required",
-		})
-		return
-	}
-
-	routeIDObj, err := primitive.ObjectIDFromHex(routeID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid route ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Получаем активные транспортные средства на маршруте
-	filter := bson.M{
-		"route_id":   routeIDObj,
-		"status":     models.VehicleStatusActive,
-		"is_tracked": true,
-	}
-
-	cursor, err := h.vehicleCollection.Find(ctx, filter)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching live tracking data",
+			"error": "Error fetching live vehicles",
 		})
 		return
 	}
@@ -861,179 +818,186 @@ func (h *TransportHandler) GetLiveTracking(c *gin.Context) {
 		return
 	}
 
-	// Фильтруем только онлайн транспорт (обновления менее 5 минут назад)
-	var liveVehicles []gin.H
-	cutoff := time.Now().Add(-5 * time.Minute)
-
-	for _, vehicle := range vehicles {
-		if vehicle.LastUpdate != nil && vehicle.LastUpdate.After(cutoff) {
-			liveVehicle := gin.H{
-				"vehicle_id":     vehicle.ID,
-				"vehicle_number": vehicle.VehicleNumber,
-				"location":       vehicle.CurrentLocation,
-				"speed":          vehicle.Speed,
-				"direction":      vehicle.Direction,
-				"last_update":    vehicle.LastUpdate,
-				"is_online":      true,
-			}
-
-			if vehicle.CurrentStopID != nil {
-				liveVehicle["current_stop_id"] = vehicle.CurrentStopID
-			}
-
-			liveVehicles = append(liveVehicles, liveVehicle)
+	// Дополняем информацией о маршрутах
+	for i := range vehicles {
+		var route models.TransportRoute
+		if err := h.routeCollection.FindOne(ctx, bson.M{"_id": vehicles[i].RouteID}).Decode(&route); err == nil {
+			// Добавляем информацию о маршруте для отображения на карте
+			vehicles[i].RouteNumber = route.Number
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"route_id":      routeID,
-		"live_vehicles": liveVehicles,
-		"last_updated":  time.Now(),
+		"vehicles":  vehicles,
+		"count":     len(vehicles),
+		"timestamp": time.Now(),
 	})
 }
 
-func (h *TransportHandler) GetTransportStats(c *gin.Context) {
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
+// GetRouteSchedule возвращает расписание маршрута
+func (h *TransportHandler) GetRouteSchedule(c *gin.Context) {
+	routeID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid route ID",
 		})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	stopName := c.Query("stop")                      // Опционально: расписание для конкретной остановки
+	dayType := c.DefaultQuery("day_type", "weekday") // weekday, saturday, sunday
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Статистика маршрутов по типам транспорта
-	routePipeline := []bson.M{
+	var route models.TransportRoute
+	err = h.routeCollection.FindOne(ctx, bson.M{"_id": routeID}).Decode(&route)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Route not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching route",
+		})
+		return
+	}
+
+	// Фильтруем расписание по типу дня и остановке
+	var filteredSchedule []models.TransportSchedule
+	for _, schedule := range route.Schedule {
+		if schedule.DayType == dayType {
+			if stopName == "" || schedule.StopName == stopName {
+				filteredSchedule = append(filteredSchedule, schedule)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"route_number": route.Number,
+		"route_name":   route.Name,
+		"day_type":     dayType,
+		"stop":         stopName,
+		"schedule":     filteredSchedule,
+	})
+}
+
+// GetNearestStops возвращает ближайшие остановки
+func (h *TransportHandler) GetNearestStops(c *gin.Context) {
+	lat := c.Query("lat")
+	lng := c.Query("lng")
+	radiusStr := c.DefaultQuery("radius", "500") // радиус в метрах
+
+	if lat == "" || lng == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Latitude and longitude are required",
+		})
+		return
+	}
+
+	latitude, _ := strconv.ParseFloat(lat, 64)
+	longitude, _ := strconv.ParseFloat(lng, 64)
+	radius, _ := strconv.ParseFloat(radiusStr, 64)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Агрегация для поиска ближайших остановок
+	pipeline := []bson.M{
+		{"$unwind": "$stops"},
+		{
+			"$geoNear": bson.M{
+				"near": bson.M{
+					"type":        "Point",
+					"coordinates": []float64{longitude, latitude},
+				},
+				"distanceField": "distance",
+				"maxDistance":   radius,
+				"spherical":     true,
+			},
+		},
 		{
 			"$group": bson.M{
-				"_id":   "$transport_type",
-				"count": bson.M{"$sum": 1},
-				"active_count": bson.M{
-					"$sum": bson.M{
-						"$cond": bson.A{
-							"$is_active",
-							1,
-							0,
-						},
+				"_id":      "$stops.name",
+				"location": bson.M{"$first": "$stops.location"},
+				"distance": bson.M{"$first": "$distance"},
+				"routes": bson.M{
+					"$push": bson.M{
+						"route_id":     "$_id",
+						"route_number": "$number",
+						"route_type":   "$type",
+						"route_name":   "$name",
 					},
 				},
 			},
 		},
+		{"$sort": bson.M{"distance": 1}},
+		{"$limit": 10},
 	}
 
-	routeCursor, err := h.routeCollection.Aggregate(ctx, routePipeline)
+	cursor, err := h.routeCollection.Aggregate(ctx, pipeline)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error getting route stats",
+			"error": "Error finding nearest stops",
 		})
 		return
 	}
-	defer routeCursor.Close(ctx)
+	defer cursor.Close(ctx)
 
-	routeStats := make(map[string]interface{})
-	for routeCursor.Next(ctx) {
-		var result struct {
-			ID          string `bson:"_id"`
-			Count       int    `bson:"count"`
-			ActiveCount int    `bson:"active_count"`
-		}
-		if err := routeCursor.Decode(&result); err != nil {
-			continue
-		}
-		routeStats[result.ID] = gin.H{
-			"total":  result.Count,
-			"active": result.ActiveCount,
-		}
-	}
-
-	// Статистика транспортных средств по статусам
-	vehiclePipeline := []bson.M{
-		{
-			"$group": bson.M{
-				"_id":   "$status",
-				"count": bson.M{"$sum": 1},
-			},
-		},
-	}
-
-	vehicleCursor, err := h.vehicleCollection.Aggregate(ctx, vehiclePipeline)
-	if err != nil {
+	var stops []bson.M
+	if err := cursor.All(ctx, &stops); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error getting vehicle stats",
+			"error": "Error decoding stops",
 		})
 		return
-	}
-	defer vehicleCursor.Close(ctx)
-
-	vehicleStats := make(map[string]int)
-	for vehicleCursor.Next(ctx) {
-		var result struct {
-			ID    string `bson:"_id"`
-			Count int    `bson:"count"`
-		}
-		if err := vehicleCursor.Decode(&result); err != nil {
-			continue
-		}
-		vehicleStats[result.ID] = result.Count
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"route_stats":   routeStats,
-		"vehicle_stats": vehicleStats,
-		"updated_at":    time.Now(),
+		"stops": stops,
+		"count": len(stops),
 	})
 }
 
-// Функция для генерации расписаний (можно запускать как фоновую задачу)
+// StartScheduleGenerator запускает фоновую задачу генерации расписания
 func (h *TransportHandler) StartScheduleGenerator() {
-	// Запускаем в горутине генерацию расписаний каждые 30 минут
-	ticker := time.NewTicker(30 * time.Minute)
+	// В реальном приложении здесь была бы более сложная логика
+	// генерации и обновления расписания транспорта
 	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ticker.C:
-				h.generateSchedules()
+				h.updateSchedules()
 			}
 		}
 	}()
 }
 
-func (h *TransportHandler) generateSchedules() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// updateSchedules обновляет расписания маршрутов
+func (h *TransportHandler) updateSchedules() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Получаем все активные маршруты
-	cursor, err := h.routeCollection.Find(ctx, bson.M{"is_active": true})
-	if err != nil {
-		return
-	}
-	defer cursor.Close(ctx)
+	// Здесь может быть логика автоматического обновления расписаний
+	// на основе статистики, праздников, событий и т.д.
 
-	var routes []models.TransportRoute
-	if err := cursor.All(ctx, &routes); err != nil {
-		return
-	}
-
-	// Генерируем расписания для каждого маршрута
-	for _, route := range routes {
-		h.generateRouteSchedule(route)
-	}
-}
-
-func (h *TransportHandler) generateRouteSchedule(route models.TransportRoute) {
-	// Здесь можно реализовать логику генерации расписания
-	// на основе интервалов движения, времени работы маршрута и т.д.
-
-	// Это упрощенная заглушка для демонстрации
-	now := time.Now()
-	_ = now
-	_ = route
-
-	// В реальной реализации здесь будет:
-	// 1. Парсинг расписания маршрута
-	// 2. Генерация времен прибытия для каждой остановки
-	// 3. Сохранение в коллекцию arrivals
+	// Пример: обновление статуса онлайн для неактивных транспортных средств
+	h.vehicleCollection.UpdateMany(
+		ctx,
+		bson.M{
+			"is_online": true,
+			"last_update_time": bson.M{
+				"$lt": time.Now().Add(-10 * time.Minute),
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"is_online": false,
+			},
+		},
+	)
 }

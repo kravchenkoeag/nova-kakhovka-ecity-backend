@@ -85,13 +85,27 @@ func (h *CityIssueHandler) CreateIssue(c *gin.Context) {
 
 	// Устанавливаем приоритет по умолчанию
 	if req.Priority == "" {
-		req.Priority = models.IssuePriorityMedium
+		req.Priority = models.PriorityMedium
 	}
 
-	// Валидация медиафайлов
-	if len(req.Photos)+len(req.Videos) > 10 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Maximum 10 media files allowed",
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Проверяем лимит на количество активных заявок от одного пользователя
+	activeCount, err := h.issueCollection.CountDocuments(ctx, bson.M{
+		"reporter_id": userIDObj,
+		"status":      bson.M{"$in": []string{models.IssueStatusReported, models.IssueStatusInProgress}},
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database error",
+		})
+		return
+	}
+
+	if activeCount >= 10 { // Лимит 10 активных заявок
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": "Too many active issues. Please wait for some to be resolved.",
 		})
 		return
 	}
@@ -102,24 +116,29 @@ func (h *CityIssueHandler) CreateIssue(c *gin.Context) {
 		Title:       req.Title,
 		Description: req.Description,
 		Category:    req.Category,
+		Status:      models.IssueStatusReported,
 		Priority:    req.Priority,
 		Location:    req.Location,
 		Address:     req.Address,
 		Photos:      req.Photos,
 		Videos:      req.Videos,
-		Status:      models.IssueStatusReported,
-		Upvotes:     []primitive.ObjectID{},
 		Comments:    []models.IssueComment{},
-		Subscribers: []primitive.ObjectID{userIDObj}, // Репортер автоматически подписан
+		StatusHistory: []models.IssueStatusChange{
+			{
+				Status:    models.IssueStatusReported,
+				ChangedBy: userIDObj,
+				ChangedAt: now,
+				Note:      "Issue reported",
+			},
+		},
+		UpVotes:     []primitive.ObjectID{},
+		UpVoteCount: 0,
 		IsVerified:  false,
-		IsPublic:    true,
-		ViewCount:   0,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		ViewCount:   0,
+		Subscribers: []primitive.ObjectID{userIDObj}, // Автор автоматически подписан
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	result, err := h.issueCollection.InsertOne(ctx, issue)
 	if err != nil {
@@ -132,11 +151,14 @@ func (h *CityIssueHandler) CreateIssue(c *gin.Context) {
 	issue.ID = result.InsertedID.(primitive.ObjectID)
 
 	// Отправляем уведомление модераторам о новой проблеме
-	go h.notifyModeratorsAboutNewIssue(issue)
+	if req.Priority == models.PriorityCritical {
+		h.notifyModeratorsAboutNewIssue(issue)
+	}
 
 	c.JSON(http.StatusCreated, issue)
 }
 
+// GetIssues возвращает список проблем с фильтрацией
 func (h *CityIssueHandler) GetIssues(c *gin.Context) {
 	var filters IssueFilters
 	if err := c.ShouldBindQuery(&filters); err != nil {
@@ -147,83 +169,96 @@ func (h *CityIssueHandler) GetIssues(c *gin.Context) {
 		return
 	}
 
-	// Устанавливаем значения по умолчанию
-	if filters.Page <= 0 {
+	// Дефолтные значения для пагинации
+	if filters.Page < 1 {
 		filters.Page = 1
 	}
-	if filters.Limit <= 0 || filters.Limit > 100 {
+	if filters.Limit < 1 || filters.Limit > 100 {
 		filters.Limit = 20
 	}
-	if filters.SortBy == "" {
-		filters.SortBy = "created_at"
-	}
-	if filters.SortOrder == "" {
-		filters.SortOrder = "desc"
-	}
 
-	// Строим фильтр для запроса
-	filter := bson.M{"is_public": true}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Построение фильтра запроса
+	query := bson.M{}
 
 	if filters.Category != "" {
-		filter["category"] = filters.Category
+		query["category"] = filters.Category
 	}
 	if filters.Status != "" {
-		filter["status"] = filters.Status
+		query["status"] = filters.Status
 	}
 	if filters.Priority != "" {
-		filter["priority"] = filters.Priority
+		query["priority"] = filters.Priority
 	}
 	if filters.ReporterID != "" {
-		reporterID, err := primitive.ObjectIDFromHex(filters.ReporterID)
-		if err == nil {
-			filter["reporter_id"] = reporterID
+		if reporterID, err := primitive.ObjectIDFromHex(filters.ReporterID); err == nil {
+			query["reporter_id"] = reporterID
 		}
 	}
 	if filters.AssignedTo != "" {
-		assignedTo, err := primitive.ObjectIDFromHex(filters.AssignedTo)
-		if err == nil {
-			filter["assigned_to"] = assignedTo
-		}
+		query["assigned_dept"] = filters.AssignedTo
 	}
-	if filters.IsVerified != nil {
-		filter["is_verified"] = *filters.IsVerified
-	}
-
-	// Фильтр по дате
 	if !filters.DateFrom.IsZero() || !filters.DateTo.IsZero() {
-		dateFilter := bson.M{}
+		dateQuery := bson.M{}
 		if !filters.DateFrom.IsZero() {
-			dateFilter["$gte"] = filters.DateFrom
+			dateQuery["$gte"] = filters.DateFrom
 		}
 		if !filters.DateTo.IsZero() {
-			dateFilter["$lte"] = filters.DateTo
+			dateQuery["$lte"] = filters.DateTo
 		}
-		filter["created_at"] = dateFilter
+		query["created_at"] = dateQuery
+	}
+	if filters.IsVerified != nil {
+		query["is_verified"] = *filters.IsVerified
 	}
 
-	// Настройки сортировки
-	sortOrder := 1
-	if filters.SortOrder == "desc" {
-		sortOrder = -1
+	// Геофильтрация по границам карты
+	if filters.Bounds != "" {
+		// Парсим границы: "lat1,lng1,lat2,lng2"
+		var lat1, lng1, lat2, lng2 float64
+		if _, err := fmt.Sscanf(filters.Bounds, "%f,%f,%f,%f", &lat1, &lng1, &lat2, &lng2); err == nil {
+			query["location"] = bson.M{
+				"$geoWithin": bson.M{
+					"$box": [][]float64{
+						{lng1, lat1}, // Нижний левый угол
+						{lng2, lat2}, // Верхний правый угол
+					},
+				},
+			}
+		}
 	}
 
-	// Для сортировки по количеству голосов используем агрегацию
-	if filters.SortBy == "upvotes" {
-		h.getIssuesWithAggregation(c, filter, filters, sortOrder)
-		return
+	// Настройка сортировки
+	sortOptions := options.Find()
+	if filters.SortBy != "" {
+		sortOrder := 1
+		if filters.SortOrder == "desc" {
+			sortOrder = -1
+		}
+
+		// Для приоритета используем специальную сортировку
+		if filters.SortBy == "priority" {
+			// Сортируем по приоритету с учетом критичности
+			sortOptions.SetSort(bson.D{
+				{"priority_weight", sortOrder},
+				{"created_at", -1},
+			})
+		} else {
+			sortOptions.SetSort(bson.D{{filters.SortBy, sortOrder}})
+		}
+	} else {
+		sortOptions.SetSort(bson.D{{"created_at", -1}})
 	}
 
-	// Параметры пагинации
+	// Пагинация
 	skip := (filters.Page - 1) * filters.Limit
-	opts := options.Find().
-		SetLimit(int64(filters.Limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: filters.SortBy, Value: sortOrder}})
+	sortOptions.SetLimit(int64(filters.Limit))
+	sortOptions.SetSkip(int64(skip))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := h.issueCollection.Find(ctx, filter, opts)
+	// Выполнение запроса
+	cursor, err := h.issueCollection.Find(ctx, query, sortOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error fetching issues",
@@ -240,79 +275,23 @@ func (h *CityIssueHandler) GetIssues(c *gin.Context) {
 		return
 	}
 
-	// Получаем общее количество для пагинации
-	totalCount, err := h.issueCollection.CountDocuments(ctx, filter)
-	if err != nil {
-		totalCount = 0
-	}
-
-	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
+	// Подсчет общего количества
+	total, _ := h.issueCollection.CountDocuments(ctx, query)
 
 	c.JSON(http.StatusOK, gin.H{
 		"issues": issues,
 		"pagination": gin.H{
 			"page":        filters.Page,
 			"limit":       filters.Limit,
-			"total":       totalCount,
-			"total_pages": totalPages,
+			"total":       total,
+			"total_pages": (total + int64(filters.Limit) - 1) / int64(filters.Limit),
 		},
 	})
 }
 
-func (h *CityIssueHandler) getIssuesWithAggregation(c *gin.Context, filter bson.M, filters IssueFilters, sortOrder int) {
-	skip := (filters.Page - 1) * filters.Limit
-
-	pipeline := []bson.M{
-		{"$match": filter},
-		{"$addFields": bson.M{
-			"upvotes_count": bson.M{"$size": "$upvotes"},
-		}},
-		{"$sort": bson.M{"upvotes_count": sortOrder}},
-		{"$skip": skip},
-		{"$limit": filters.Limit},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := h.issueCollection.Aggregate(ctx, pipeline)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching issues",
-		})
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var issues []models.CityIssue
-	if err := cursor.All(ctx, &issues); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error decoding issues",
-		})
-		return
-	}
-
-	totalCount, err := h.issueCollection.CountDocuments(ctx, filter)
-	if err != nil {
-		totalCount = 0
-	}
-
-	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
-
-	c.JSON(http.StatusOK, gin.H{
-		"issues": issues,
-		"pagination": gin.H{
-			"page":        filters.Page,
-			"limit":       filters.Limit,
-			"total":       totalCount,
-			"total_pages": totalPages,
-		},
-	})
-}
-
+// GetIssue возвращает детальную информацию о проблеме
 func (h *CityIssueHandler) GetIssue(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid issue ID",
@@ -324,39 +303,150 @@ func (h *CityIssueHandler) GetIssue(c *gin.Context) {
 	defer cancel()
 
 	var issue models.CityIssue
-	err = h.issueCollection.FindOne(ctx, bson.M{
-		"_id":       issueIDObj,
-		"is_public": true,
-	}).Decode(&issue)
-
+	err = h.issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Issue not found",
 			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
+			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching issue",
+		})
 		return
 	}
 
 	// Увеличиваем счетчик просмотров
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		h.issueCollection.UpdateOne(ctx, bson.M{"_id": issueIDObj}, bson.M{
-			"$inc": bson.M{"view_count": 1},
-		})
-	}()
+	h.issueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{"$inc": bson.M{"view_count": 1}},
+	)
 
 	c.JSON(http.StatusOK, issue)
 }
 
+// UpdateIssueStatus обновляет статус проблемы (для модераторов)
+func (h *CityIssueHandler) UpdateIssueStatus(c *gin.Context) {
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid issue ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	var req UpdateIssueStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Получаем текущую проблему
+	var issue models.CityIssue
+	err = h.issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Issue not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching issue",
+		})
+		return
+	}
+
+	// Добавляем запись в историю изменений статуса
+	statusChange := models.IssueStatusChange{
+		Status:    req.Status,
+		ChangedBy: userIDObj,
+		ChangedAt: time.Now(),
+		Note:      req.ResolutionNote,
+	}
+
+	updateFields := bson.M{
+		"status":      req.Status,
+		"updated_at":  time.Now(),
+		"is_verified": true, // Проверено модератором
+	}
+
+	// Добавляем дополнительные поля в зависимости от статуса
+	if req.Status == models.IssueStatusResolved {
+		updateFields["resolved_at"] = time.Now()
+		if req.Resolution != "" {
+			updateFields["resolution"] = req.Resolution
+		}
+		if req.ResolutionNote != "" {
+			updateFields["resolution_note"] = req.ResolutionNote
+		}
+	}
+
+	if req.Status == models.IssueStatusDuplicate && req.DuplicateOf != "" {
+		if duplicateID, err := primitive.ObjectIDFromHex(req.DuplicateOf); err == nil {
+			updateFields["duplicate_of"] = duplicateID
+		}
+	}
+
+	if req.AssignedDept != "" {
+		updateFields["assigned_dept"] = req.AssignedDept
+	}
+
+	// Обновляем проблему
+	result, err := h.issueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{
+			"$set":  updateFields,
+			"$push": bson.M{"status_history": statusChange},
+		},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating issue status",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Issue not found",
+		})
+		return
+	}
+
+	// Отправляем уведомления подписчикам об изменении статуса
+	h.notifySubscribersAboutStatusChange(issueID, req.Status, req.ResolutionNote)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Issue status updated successfully",
+	})
+}
+
+// UpvoteIssue позволяет пользователю проголосовать за важность проблемы
 func (h *CityIssueHandler) UpvoteIssue(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid issue ID",
@@ -370,73 +460,84 @@ func (h *CityIssueHandler) UpvoteIssue(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Проверяем, не голосовал ли пользователь уже
-	var issue models.CityIssue
-	err = h.issueCollection.FindOne(ctx, bson.M{"_id": issueIDObj}).Decode(&issue)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Issue not found",
-			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
-		}
-		return
-	}
-
-	// Проверяем, голосовал ли уже пользователь
-	alreadyUpvoted := false
-	for _, upvoterID := range issue.Upvotes {
-		if upvoterID == userIDObj {
-			alreadyUpvoted = true
-			break
-		}
-	}
-
-	var update bson.M
-	var message string
-
-	if alreadyUpvoted {
-		// Убираем голос
-		update = bson.M{
-			"$pull": bson.M{"upvotes": userIDObj},
-			"$set":  bson.M{"updated_at": time.Now()},
-		}
-		message = "Upvote removed"
-	} else {
-		// Добавляем голос
-		update = bson.M{
-			"$push": bson.M{"upvotes": userIDObj},
-			"$set":  bson.M{"updated_at": time.Now()},
-		}
-		message = "Upvoted successfully"
-	}
-
-	result, err := h.issueCollection.UpdateOne(ctx, bson.M{"_id": issueIDObj}, update)
+	// Проверяем, не голосовал ли уже пользователь
+	count, err := h.issueCollection.CountDocuments(ctx, bson.M{
+		"_id":      issueID,
+		"up_votes": userIDObj,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error updating upvote",
+			"error": "Database error",
 		})
 		return
 	}
 
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Issue not found",
+	if count > 0 {
+		// Убираем голос
+		result, err := h.issueCollection.UpdateOne(
+			ctx,
+			bson.M{"_id": issueID},
+			bson.M{
+				"$pull": bson.M{"up_votes": userIDObj},
+				"$inc":  bson.M{"up_vote_count": -1},
+			},
+		)
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Error removing upvote",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Upvote removed",
+			"voted":   false,
 		})
-		return
-	}
+	} else {
+		// Добавляем голос
+		result, err := h.issueCollection.UpdateOne(
+			ctx,
+			bson.M{"_id": issueID},
+			bson.M{
+				"$addToSet": bson.M{"up_votes": userIDObj},
+				"$inc":      bson.M{"up_vote_count": 1},
+			},
+		)
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Error adding upvote",
+			})
+			return
+		}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": message,
-	})
+		// Проверяем, не нужно ли повысить приоритет
+		var issue models.CityIssue
+		h.issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+
+		// Автоматическое повышение приоритета при большом количестве голосов
+		if issue.UpVoteCount >= 50 && issue.Priority == models.PriorityLow {
+			h.issueCollection.UpdateOne(
+				ctx,
+				bson.M{"_id": issueID},
+				bson.M{"$set": bson.M{"priority": models.PriorityMedium}},
+			)
+		} else if issue.UpVoteCount >= 100 && issue.Priority == models.PriorityMedium {
+			h.issueCollection.UpdateOne(
+				ctx,
+				bson.M{"_id": issueID},
+				bson.M{"$set": bson.M{"priority": models.PriorityHigh}},
+			)
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Upvote added",
+			"voted":   true,
+		})
+	}
 }
 
+// AddComment добавляет комментарий к проблеме
 func (h *CityIssueHandler) AddComment(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid issue ID",
@@ -457,26 +558,27 @@ func (h *CityIssueHandler) AddComment(c *gin.Context) {
 	userIDObj := userID.(primitive.ObjectID)
 	isModerator, _ := c.Get("is_moderator")
 
-	now := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Создаем комментарий
 	comment := models.IssueComment{
 		ID:         primitive.NewObjectID(),
 		AuthorID:   userIDObj,
 		Content:    req.Content,
+		CreatedAt:  time.Now(),
 		IsOfficial: isModerator.(bool),
-		CreatedAt:  now,
-		UpdatedAt:  now,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.issueCollection.UpdateOne(ctx, bson.M{
-		"_id":       issueIDObj,
-		"is_public": true,
-	}, bson.M{
-		"$push": bson.M{"comments": comment},
-		"$set":  bson.M{"updated_at": now},
-	})
+	// Добавляем комментарий к проблеме
+	result, err := h.issueCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": issueID},
+		bson.M{
+			"$push": bson.M{"comments": comment},
+			"$set":  bson.M{"updated_at": time.Now()},
+		},
+	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -492,15 +594,15 @@ func (h *CityIssueHandler) AddComment(c *gin.Context) {
 		return
 	}
 
-	// Уведомляем подписчиков о новом комментарии
-	go h.notifySubscribersAboutComment(issueIDObj, userIDObj, req.Content, comment.IsOfficial)
+	// Отправляем уведомления подписчикам о новом комментарии
+	h.notifySubscribersAboutComment(issueID, userIDObj, req.Content, isModerator.(bool))
 
 	c.JSON(http.StatusCreated, comment)
 }
 
+// SubscribeToIssue подписывает пользователя на уведомления о проблеме
 func (h *CityIssueHandler) SubscribeToIssue(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
+	issueID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid issue ID",
@@ -514,10 +616,10 @@ func (h *CityIssueHandler) SubscribeToIssue(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Проверяем, не подписан ли уже пользователь
+	// Проверяем, не подписан ли уже
 	count, err := h.issueCollection.CountDocuments(ctx, bson.M{
-		"_id":         issueIDObj,
-		"subscribers": bson.M{"$in": []primitive.ObjectID{userIDObj}},
+		"_id":         issueID,
+		"subscribers": userIDObj,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -527,178 +629,122 @@ func (h *CityIssueHandler) SubscribeToIssue(c *gin.Context) {
 	}
 
 	if count > 0 {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "Already subscribed to this issue",
-		})
-		return
-	}
-
-	// Добавляем подписку
-	result, err := h.issueCollection.UpdateOne(ctx, bson.M{"_id": issueIDObj}, bson.M{
-		"$push": bson.M{"subscribers": userIDObj},
-		"$set":  bson.M{"updated_at": time.Now()},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error subscribing to issue",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Issue not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Successfully subscribed to issue",
-	})
-}
-
-func (h *CityIssueHandler) UnsubscribeFromIssue(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid issue ID",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := h.issueCollection.UpdateOne(ctx, bson.M{"_id": issueIDObj}, bson.M{
-		"$pull": bson.M{"subscribers": userIDObj},
-		"$set":  bson.M{"updated_at": time.Now()},
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error unsubscribing from issue",
-		})
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Issue not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Successfully unsubscribed from issue",
-	})
-}
-
-// Админские функции для модераторов
-func (h *CityIssueHandler) UpdateIssueStatus(c *gin.Context) {
-	issueID := c.Param("id")
-	issueIDObj, err := primitive.ObjectIDFromHex(issueID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid issue ID",
-		})
-		return
-	}
-
-	var req UpdateIssueStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid request data",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	updateData := bson.M{
-		"status":      req.Status,
-		"updated_at":  time.Now(),
-		"assigned_to": userIDObj,
-	}
-
-	if req.AssignedDept != "" {
-		updateData["assigned_dept"] = req.AssignedDept
-	}
-	if req.Resolution != "" {
-		updateData["resolution"] = req.Resolution
-	}
-	if req.ResolutionNote != "" {
-		updateData["resolution_note"] = req.ResolutionNote
-	}
-	if req.Status == models.IssueStatusResolved {
-		updateData["resolved_at"] = time.Now()
-	}
-	if req.Status == models.IssueStatusDuplicate && req.DuplicateOf != "" {
-		duplicateID, err := primitive.ObjectIDFromHex(req.DuplicateOf)
-		if err == nil {
-			updateData["duplicate_of"] = duplicateID
+		// Отписываемся
+		result, err := h.issueCollection.UpdateOne(
+			ctx,
+			bson.M{"_id": issueID},
+			bson.M{"$pull": bson.M{"subscribers": userIDObj}},
+		)
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Error unsubscribing",
+			})
+			return
 		}
+		c.JSON(http.StatusOK, gin.H{
+			"message":    "Unsubscribed successfully",
+			"subscribed": false,
+		})
+	} else {
+		// Подписываемся
+		result, err := h.issueCollection.UpdateOne(
+			ctx,
+			bson.M{"_id": issueID},
+			bson.M{"$addToSet": bson.M{"subscribers": userIDObj}},
+		)
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Error subscribing",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message":    "Subscribed successfully",
+			"subscribed": true,
+		})
+	}
+}
+
+// GetNearbyIssues возвращает проблемы рядом с указанной точкой
+func (h *CityIssueHandler) GetNearbyIssues(c *gin.Context) {
+	lat := c.DefaultQuery("lat", "")
+	lng := c.DefaultQuery("lng", "")
+	radiusStr := c.DefaultQuery("radius", "1000") // радиус в метрах
+
+	if lat == "" || lng == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Latitude and longitude are required",
+		})
+		return
 	}
 
-	result, err := h.issueCollection.UpdateOne(ctx, bson.M{"_id": issueIDObj}, bson.M{
-		"$set": updateData,
-	})
+	var latitude, longitude float64
+	var radius int
+	if _, err := fmt.Sscanf(lat, "%f", &latitude); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid latitude",
+		})
+		return
+	}
+	if _, err := fmt.Sscanf(lng, "%f", &longitude); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid longitude",
+		})
+		return
+	}
+	if _, err := fmt.Sscanf(radiusStr, "%d", &radius); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid radius",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Поиск проблем в радиусе
+	cursor, err := h.issueCollection.Find(ctx, bson.M{
+		"location": bson.M{
+			"$near": bson.M{
+				"$geometry": bson.M{
+					"type":        "Point",
+					"coordinates": []float64{longitude, latitude},
+				},
+				"$maxDistance": radius,
+			},
+		},
+		"status": bson.M{"$nin": []string{models.IssueStatusResolved, models.IssueStatusRejected}},
+	}, options.Find().SetLimit(50))
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error updating issue status",
+			"error": "Error fetching nearby issues",
 		})
 		return
 	}
+	defer cursor.Close(ctx)
 
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Issue not found",
+	var issues []models.CityIssue
+	if err := cursor.All(ctx, &issues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding issues",
 		})
 		return
 	}
-
-	// Уведомляем подписчиков об изменении статуса
-	go h.notifySubscribersAboutStatusChange(issueIDObj, req.Status, req.ResolutionNote)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Issue status updated successfully",
+		"issues": issues,
+		"count":  len(issues),
 	})
 }
 
+// GetIssueStats возвращает статистику по проблемам
 func (h *CityIssueHandler) GetIssueStats(c *gin.Context) {
-	// Проверяем права модератора
-	isModerator, _ := c.Get("is_moderator")
-	if !isModerator.(bool) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Moderator access required",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Статистика по статусам
-	pipeline := []bson.M{
+	// Агрегация по статусам
+	statusPipeline := []bson.M{
 		{
 			"$group": bson.M{
 				"_id":   "$status",
@@ -707,28 +753,19 @@ func (h *CityIssueHandler) GetIssueStats(c *gin.Context) {
 		},
 	}
 
-	cursor, err := h.issueCollection.Aggregate(ctx, pipeline)
+	statusCursor, err := h.issueCollection.Aggregate(ctx, statusPipeline)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error getting issue stats",
+			"error": "Error calculating status stats",
 		})
 		return
 	}
-	defer cursor.Close(ctx)
+	defer statusCursor.Close(ctx)
 
-	statusStats := make(map[string]int)
-	for cursor.Next(ctx) {
-		var result struct {
-			ID    string `bson:"_id"`
-			Count int    `bson:"count"`
-		}
-		if err := cursor.Decode(&result); err != nil {
-			continue
-		}
-		statusStats[result.ID] = result.Count
-	}
+	var statusStats []bson.M
+	statusCursor.All(ctx, &statusStats)
 
-	// Статистика по категориям
+	// Агрегация по категориям
 	categoryPipeline := []bson.M{
 		{
 			"$group": bson.M{
@@ -741,23 +778,14 @@ func (h *CityIssueHandler) GetIssueStats(c *gin.Context) {
 	categoryCursor, err := h.issueCollection.Aggregate(ctx, categoryPipeline)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error getting category stats",
+			"error": "Error calculating category stats",
 		})
 		return
 	}
 	defer categoryCursor.Close(ctx)
 
-	categoryStats := make(map[string]int)
-	for categoryCursor.Next(ctx) {
-		var result struct {
-			ID    string `bson:"_id"`
-			Count int    `bson:"count"`
-		}
-		if err := categoryCursor.Decode(&result); err != nil {
-			continue
-		}
-		categoryStats[result.ID] = result.Count
-	}
+	var categoryStats []bson.M
+	categoryCursor.All(ctx, &categoryStats)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status_stats":   statusStats,

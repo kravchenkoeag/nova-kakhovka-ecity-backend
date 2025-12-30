@@ -1,3 +1,4 @@
+// internal/handlers/announcement.go
 package handlers
 
 import (
@@ -74,34 +75,54 @@ func (h *AnnouncementHandler) CreateAnnouncement(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	userIDObj := userID.(primitive.ObjectID)
 
-	// Если дата истечения не указана, устанавливаем 30 дней
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Проверяем лимит на количество активных объявлений от одного пользователя
+	activeCount, err := h.announcementCollection.CountDocuments(ctx, bson.M{
+		"author_id":  userIDObj,
+		"is_active":  true,
+		"expires_at": bson.M{"$gt": time.Now()},
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database error",
+		})
+		return
+	}
+
+	if activeCount >= 5 { // Лимит 5 активных объявлений
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": "Too many active announcements. Please wait for some to expire or delete them.",
+		})
+		return
+	}
+
+	// Устанавливаем дату истечения по умолчанию (30 дней)
 	if req.ExpiresAt.IsZero() {
-		req.ExpiresAt = time.Now().Add(30 * 24 * time.Hour)
+		req.ExpiresAt = time.Now().AddDate(0, 0, 30)
 	}
 
 	now := time.Now()
 	announcement := models.Announcement{
-		AuthorID:    userIDObj,
-		Title:       req.Title,
-		Description: req.Description,
-		Category:    req.Category,
-		Location:    req.Location,
-		Address:     req.Address,
-		Employment:  req.Employment,
-		ContactInfo: req.ContactInfo,
-		MediaFiles:  req.MediaFiles,
-		IsActive:    true,
-		IsModerated: false, // Требует модерации
-		IsBlocked:   false,
-		Views:       0,
-		Contacts:    0,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		ExpiresAt:   req.ExpiresAt,
+		AuthorID:      userIDObj,
+		Title:         req.Title,
+		Description:   req.Description,
+		Category:      req.Category,
+		Location:      req.Location,
+		Address:       req.Address,
+		Employment:    req.Employment,
+		ContactInfo:   req.ContactInfo,
+		MediaFiles:    req.MediaFiles,
+		IsActive:      true,
+		IsVerified:    false, // Требует модерации
+		Status:        "pending",
+		ViewCount:     0,
+		ResponseCount: 0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ExpiresAt:     req.ExpiresAt,
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	result, err := h.announcementCollection.InsertOne(ctx, announcement)
 	if err != nil {
@@ -112,10 +133,10 @@ func (h *AnnouncementHandler) CreateAnnouncement(c *gin.Context) {
 	}
 
 	announcement.ID = result.InsertedID.(primitive.ObjectID)
-
 	c.JSON(http.StatusCreated, announcement)
 }
 
+// GetAnnouncements возвращает список объявлений с фильтрацией
 func (h *AnnouncementHandler) GetAnnouncements(c *gin.Context) {
 	var filters AnnouncementFilters
 	if err := c.ShouldBindQuery(&filters); err != nil {
@@ -126,62 +147,66 @@ func (h *AnnouncementHandler) GetAnnouncements(c *gin.Context) {
 		return
 	}
 
-	// Устанавливаем значения по умолчанию
-	if filters.Page <= 0 {
+	// Дефолтные значения для пагинации
+	if filters.Page < 1 {
 		filters.Page = 1
 	}
-	if filters.Limit <= 0 || filters.Limit > 50 {
+	if filters.Limit < 1 || filters.Limit > 100 {
 		filters.Limit = 20
 	}
-	if filters.SortBy == "" {
-		filters.SortBy = "created_at"
-	}
-	if filters.SortOrder == "" {
-		filters.SortOrder = "desc"
-	}
-
-	// Строим фильтр для запроса
-	filter := bson.M{
-		"is_active":    true,
-		"is_moderated": true,
-		"is_blocked":   false,
-		"expires_at":   bson.M{"$gt": time.Now()},
-	}
-
-	if filters.Category != "" {
-		filter["category"] = filters.Category
-	}
-	if filters.Employment != "" {
-		filter["employment"] = filters.Employment
-	}
-	if !filters.CreatedFrom.IsZero() || !filters.CreatedTo.IsZero() {
-		dateFilter := bson.M{}
-		if !filters.CreatedFrom.IsZero() {
-			dateFilter["$gte"] = filters.CreatedFrom
-		}
-		if !filters.CreatedTo.IsZero() {
-			dateFilter["$lte"] = filters.CreatedTo
-		}
-		filter["created_at"] = dateFilter
-	}
-
-	// Настройки сортировки
-	sortOrder := 1
-	if filters.SortOrder == "desc" {
-		sortOrder = -1
-	}
-
-	// Параметры пагинации
-	skip := (filters.Page - 1) * filters.Limit
-	opts := options.Find().
-		SetLimit(int64(filters.Limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: filters.SortBy, Value: sortOrder}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := h.announcementCollection.Find(ctx, filter, opts)
+	// Построение фильтра запроса
+	query := bson.M{
+		"is_active":  true,
+		"expires_at": bson.M{"$gt": time.Now()},
+	}
+
+	// Показываем только верифицированные объявления обычным пользователям
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		query["is_verified"] = true
+		query["status"] = "approved"
+	}
+
+	if filters.Category != "" {
+		query["category"] = filters.Category
+	}
+	if filters.Employment != "" {
+		query["employment"] = filters.Employment
+	}
+	if !filters.CreatedFrom.IsZero() || !filters.CreatedTo.IsZero() {
+		dateQuery := bson.M{}
+		if !filters.CreatedFrom.IsZero() {
+			dateQuery["$gte"] = filters.CreatedFrom
+		}
+		if !filters.CreatedTo.IsZero() {
+			dateQuery["$lte"] = filters.CreatedTo
+		}
+		query["created_at"] = dateQuery
+	}
+
+	// Настройка сортировки
+	sortOptions := options.Find()
+	if filters.SortBy != "" {
+		sortOrder := 1
+		if filters.SortOrder == "desc" {
+			sortOrder = -1
+		}
+		sortOptions.SetSort(bson.D{{filters.SortBy, sortOrder}})
+	} else {
+		sortOptions.SetSort(bson.D{{"created_at", -1}})
+	}
+
+	// Пагинация
+	skip := (filters.Page - 1) * filters.Limit
+	sortOptions.SetLimit(int64(filters.Limit))
+	sortOptions.SetSkip(int64(skip))
+
+	// Выполнение запроса
+	cursor, err := h.announcementCollection.Find(ctx, query, sortOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error fetching announcements",
@@ -198,28 +223,23 @@ func (h *AnnouncementHandler) GetAnnouncements(c *gin.Context) {
 		return
 	}
 
-	// Получаем общее количество для пагинации
-	totalCount, err := h.announcementCollection.CountDocuments(ctx, filter)
-	if err != nil {
-		totalCount = 0
-	}
-
-	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
+	// Подсчет общего количества
+	total, _ := h.announcementCollection.CountDocuments(ctx, query)
 
 	c.JSON(http.StatusOK, gin.H{
 		"announcements": announcements,
 		"pagination": gin.H{
 			"page":        filters.Page,
 			"limit":       filters.Limit,
-			"total":       totalCount,
-			"total_pages": totalPages,
+			"total":       total,
+			"total_pages": (total + int64(filters.Limit) - 1) / int64(filters.Limit),
 		},
 	})
 }
 
+// GetAnnouncement возвращает детальную информацию об объявлении
 func (h *AnnouncementHandler) GetAnnouncement(c *gin.Context) {
-	announcementID := c.Param("id")
-	announcementIDObj, err := primitive.ObjectIDFromHex(announcementID)
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid announcement ID",
@@ -231,86 +251,33 @@ func (h *AnnouncementHandler) GetAnnouncement(c *gin.Context) {
 	defer cancel()
 
 	var announcement models.Announcement
-	err = h.announcementCollection.FindOne(ctx, bson.M{
-		"_id":          announcementIDObj,
-		"is_active":    true,
-		"is_moderated": true,
-		"is_blocked":   false,
-		"expires_at":   bson.M{"$gt": time.Now()},
-	}).Decode(&announcement)
-
+	err = h.announcementCollection.FindOne(ctx, bson.M{"_id": announcementID}).Decode(&announcement)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Announcement not found",
 			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
+			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching announcement",
+		})
 		return
 	}
 
 	// Увеличиваем счетчик просмотров
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		h.announcementCollection.UpdateOne(ctx, bson.M{"_id": announcementIDObj}, bson.M{
-			"$inc": bson.M{"views": 1},
-		})
-	}()
+	h.announcementCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": announcementID},
+		bson.M{"$inc": bson.M{"view_count": 1}},
+	)
 
 	c.JSON(http.StatusOK, announcement)
 }
 
-func (h *AnnouncementHandler) GetUserAnnouncements(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	if page <= 0 {
-		page = 1
-	}
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	skip := (page - 1) * limit
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{"created_at", -1}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := h.announcementCollection.Find(ctx, bson.M{
-		"author_id": userIDObj,
-	}, opts)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error fetching user announcements",
-		})
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var announcements []models.Announcement
-	if err := cursor.All(ctx, &announcements); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error decoding announcements",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, announcements)
-}
-
+// UpdateAnnouncement обновляет объявление
 func (h *AnnouncementHandler) UpdateAnnouncement(c *gin.Context) {
-	announcementID := c.Param("id")
-	announcementIDObj, err := primitive.ObjectIDFromHex(announcementID)
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid announcement ID",
@@ -327,63 +294,74 @@ func (h *AnnouncementHandler) UpdateAnnouncement(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Проверяем, что пользователь является автором объявления
+	// Проверяем существование и права доступа
 	var announcement models.Announcement
-	err = h.announcementCollection.FindOne(ctx, bson.M{
-		"_id":       announcementIDObj,
-		"author_id": userIDObj,
-	}).Decode(&announcement)
+	err = h.announcementCollection.FindOne(ctx, bson.M{"_id": announcementID}).Decode(&announcement)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Announcement not found or you don't have permission to edit it",
+				"error": "Announcement not found",
 			})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error",
-			})
+			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching announcement",
+		})
 		return
 	}
 
-	// Строим обновления
-	updateData := bson.M{
-		"updated_at": time.Now(),
+	// Проверяем права (только автор или модератор)
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+	isModerator, _ := c.Get("is_moderator")
+
+	if announcement.AuthorID != userIDObj && !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "You don't have permission to update this announcement",
+		})
+		return
 	}
+
+	// Подготавливаем обновления
+	updateFields := bson.M{"updated_at": time.Now()}
 
 	if req.Title != "" {
-		updateData["title"] = req.Title
-		updateData["is_moderated"] = false // Требует повторной модерации
+		updateFields["title"] = req.Title
 	}
 	if req.Description != "" {
-		updateData["description"] = req.Description
-		updateData["is_moderated"] = false
+		updateFields["description"] = req.Description
 	}
 	if req.Address != "" {
-		updateData["address"] = req.Address
+		updateFields["address"] = req.Address
 	}
 	if req.Employment != "" {
-		updateData["employment"] = req.Employment
+		updateFields["employment"] = req.Employment
 	}
-	if req.ContactInfo != nil {
-		updateData["contact_info"] = req.ContactInfo
+	if len(req.ContactInfo) > 0 {
+		updateFields["contact_info"] = req.ContactInfo
 	}
-	if req.MediaFiles != nil {
-		updateData["media_files"] = req.MediaFiles
+	if len(req.MediaFiles) > 0 {
+		updateFields["media_files"] = req.MediaFiles
 	}
 	if req.IsActive != nil {
-		updateData["is_active"] = *req.IsActive
+		updateFields["is_active"] = *req.IsActive
 	}
 
-	result, err := h.announcementCollection.UpdateOne(ctx, bson.M{"_id": announcementIDObj}, bson.M{
-		"$set": updateData,
-	})
+	// Если обновляет не модератор, сбрасываем верификацию
+	if !isModerator.(bool) && (req.Title != "" || req.Description != "") {
+		updateFields["is_verified"] = false
+		updateFields["status"] = "pending"
+	}
+
+	result, err := h.announcementCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": announcementID},
+		bson.M{"$set": updateFields},
+	)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error updating announcement",
@@ -403,9 +381,9 @@ func (h *AnnouncementHandler) UpdateAnnouncement(c *gin.Context) {
 	})
 }
 
+// DeleteAnnouncement удаляет объявление
 func (h *AnnouncementHandler) DeleteAnnouncement(c *gin.Context) {
-	announcementID := c.Param("id")
-	announcementIDObj, err := primitive.ObjectIDFromHex(announcementID)
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid announcement ID",
@@ -413,23 +391,38 @@ func (h *AnnouncementHandler) DeleteAnnouncement(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Мягкое удаление - просто помечаем как неактивное
-	result, err := h.announcementCollection.UpdateOne(ctx, bson.M{
-		"_id":       announcementIDObj,
-		"author_id": userIDObj,
-	}, bson.M{
-		"$set": bson.M{
-			"is_active":  false,
-			"updated_at": time.Now(),
-		},
-	})
+	// Проверяем существование и права
+	var announcement models.Announcement
+	err = h.announcementCollection.FindOne(ctx, bson.M{"_id": announcementID}).Decode(&announcement)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Announcement not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching announcement",
+		})
+		return
+	}
 
+	// Проверяем права
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+	isModerator, _ := c.Get("is_moderator")
+
+	if announcement.AuthorID != userIDObj && !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "You don't have permission to delete this announcement",
+		})
+		return
+	}
+
+	result, err := h.announcementCollection.DeleteOne(ctx, bson.M{"_id": announcementID})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error deleting announcement",
@@ -437,9 +430,9 @@ func (h *AnnouncementHandler) DeleteAnnouncement(c *gin.Context) {
 		return
 	}
 
-	if result.MatchedCount == 0 {
+	if result.DeletedCount == 0 {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Announcement not found or you don't have permission to delete it",
+			"error": "Announcement not found",
 		})
 		return
 	}
@@ -449,9 +442,239 @@ func (h *AnnouncementHandler) DeleteAnnouncement(c *gin.Context) {
 	})
 }
 
-func (h *AnnouncementHandler) ContactOwner(c *gin.Context) {
-	announcementID := c.Param("id")
-	announcementIDObj, err := primitive.ObjectIDFromHex(announcementID)
+// ApproveAnnouncement одобряет объявление (для модераторов)
+func (h *AnnouncementHandler) ApproveAnnouncement(c *gin.Context) {
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid announcement ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	result, err := h.announcementCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": announcementID},
+		bson.M{
+			"$set": bson.M{
+				"status":      "approved",
+				"is_verified": true,
+				"verified_by": userIDObj,
+				"verified_at": time.Now(),
+				"updated_at":  time.Now(),
+			},
+		},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error approving announcement",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Announcement not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Announcement approved successfully",
+	})
+}
+
+// RejectAnnouncement отклоняет объявление (для модераторов)
+func (h *AnnouncementHandler) RejectAnnouncement(c *gin.Context) {
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid announcement ID",
+		})
+		return
+	}
+
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	var rejectionReq struct {
+		Reason string `json:"reason" validate:"required,min=10,max=500"`
+	}
+	if err := c.ShouldBindJSON(&rejectionReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	result, err := h.announcementCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": announcementID},
+		bson.M{
+			"$set": bson.M{
+				"status":           "rejected",
+				"is_verified":      false,
+				"is_active":        false,
+				"rejected_by":      userIDObj,
+				"rejected_at":      time.Now(),
+				"rejection_reason": rejectionReq.Reason,
+				"updated_at":       time.Now(),
+			},
+		},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error rejecting announcement",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Announcement not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Announcement rejected successfully",
+	})
+}
+
+// GetMyAnnouncements возвращает объявления пользователя
+func (h *AnnouncementHandler) GetMyAnnouncements(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	// Получаем параметры пагинации
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	skip := (page - 1) * limit
+	findOptions := options.Find().
+		SetSort(bson.D{{"created_at", -1}}).
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip))
+
+	cursor, err := h.announcementCollection.Find(
+		ctx,
+		bson.M{"author_id": userIDObj},
+		findOptions,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching announcements",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var announcements []models.Announcement
+	if err := cursor.All(ctx, &announcements); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding announcements",
+		})
+		return
+	}
+
+	// Подсчет общего количества
+	total, _ := h.announcementCollection.CountDocuments(ctx, bson.M{"author_id": userIDObj})
+
+	c.JSON(http.StatusOK, gin.H{
+		"announcements": announcements,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
+}
+
+// GetPendingAnnouncements возвращает объявления на модерации (для модераторов)
+func (h *AnnouncementHandler) GetPendingAnnouncements(c *gin.Context) {
+	// Проверяем права модератора
+	isModerator, _ := c.Get("is_moderator")
+	if !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Moderator access required",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := h.announcementCollection.Find(
+		ctx,
+		bson.M{"status": "pending"},
+		options.Find().SetSort(bson.D{{"created_at", 1}}), // Старые первыми
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching pending announcements",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var announcements []models.Announcement
+	if err := cursor.All(ctx, &announcements); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding announcements",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"announcements": announcements,
+		"count":         len(announcements),
+	})
+}
+
+// IncrementResponseCount увеличивает счетчик откликов на объявление
+func (h *AnnouncementHandler) IncrementResponseCount(c *gin.Context) {
+	announcementID, err := primitive.ObjectIDFromHex(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid announcement ID",
@@ -462,31 +685,27 @@ func (h *AnnouncementHandler) ContactOwner(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Увеличиваем счетчик контактов
-	result, err := h.announcementCollection.UpdateOne(ctx, bson.M{
-		"_id":        announcementIDObj,
-		"is_active":  true,
-		"is_blocked": false,
-		"expires_at": bson.M{"$gt": time.Now()},
-	}, bson.M{
-		"$inc": bson.M{"contacts": 1},
-	})
+	result, err := h.announcementCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": announcementID},
+		bson.M{"$inc": bson.M{"response_count": 1}},
+	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error updating contact count",
+			"error": "Error updating response count",
 		})
 		return
 	}
 
 	if result.MatchedCount == 0 {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Announcement not found or expired",
+			"error": "Announcement not found",
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Contact recorded successfully",
+		"message": "Response count updated",
 	})
 }
