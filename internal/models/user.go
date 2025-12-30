@@ -133,6 +133,9 @@ type User struct {
 	// Групи користувача
 	Groups []primitive.ObjectID `bson:"groups" json:"groups"`
 
+	// Налаштування сповіщень
+	NotificationPreferences *NotificationPreferences `bson:"notification_preferences,omitempty" json:"notification_preferences,omitempty"`
+
 	// ========================================
 	// СИСТЕМА РОЛЕЙ ТА ПРАВ
 	// ========================================
@@ -154,6 +157,18 @@ type User struct {
 	LastLoginAt     *time.Time `bson:"last_login_at,omitempty" json:"last_login_at,omitempty"`
 	EmailVerifiedAt *time.Time `bson:"email_verified_at,omitempty" json:"email_verified_at,omitempty"`
 	PhoneVerifiedAt *time.Time `bson:"phone_verified_at,omitempty" json:"phone_verified_at,omitempty"`
+}
+
+type NotificationPreferences struct {
+	Email         bool `bson:"email" json:"email"`
+	Push          bool `bson:"push" json:"push"`
+	SMS           bool `bson:"sms" json:"sms"`
+	InApp         bool `bson:"in_app" json:"in_app"`
+	Announcements bool `bson:"announcements" json:"announcements"`
+	Events        bool `bson:"events" json:"events"`
+	CityIssues    bool `bson:"city_issues" json:"city_issues"`
+	Polls         bool `bson:"polls" json:"polls"`
+	Petitions     bool `bson:"petitions" json:"petitions"`
 }
 
 // ========================================

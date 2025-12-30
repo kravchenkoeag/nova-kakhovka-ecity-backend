@@ -27,13 +27,19 @@ type CityIssue struct {
 
 	// Статус и обработка
 	Status         string              `bson:"status" json:"status"` // reported, in_progress, resolved, rejected, duplicate
-	AssignedTo     *primitive.ObjectID `bson:"assigned_to,omitempty" json:"assigned_to,omitempty"`
+	StatusNote     string              `bson:"status_note,omitempty" json:"status_note,omitempty"`
+	AssignedToID   *primitive.ObjectID `bson:"assigned_to_id,omitempty" json:"assigned_to_id,omitempty"`
+	AssignmentNote string              `bson:"assignment_note,omitempty" json:"assignment_note,omitempty"`
 	AssignedDept   string              `bson:"assigned_dept" json:"assigned_dept"` // department name
 	Resolution     string              `bson:"resolution" json:"resolution"`
 	ResolutionNote string              `bson:"resolution_note" json:"resolution_note"`
 
+	// Історія зміни статусу (для tracking)
+	StatusHistory []IssueStatusChange `bson:"status_history,omitempty" json:"status_history,omitempty"`
+
 	// Взаимодействие с пользователями
-	Upvotes     []primitive.ObjectID `bson:"upvotes" json:"upvotes"`
+	UpVotes     []primitive.ObjectID `bson:"upvotes" json:"upvotes"`           //
+	UpVoteCount int                  `bson:"upvote_count" json:"upvote_count"` //
 	Comments    []IssueComment       `bson:"comments" json:"comments"`
 	Subscribers []primitive.ObjectID `bson:"subscribers" json:"subscribers"` // Пользователи, следящие за проблемой
 
@@ -45,6 +51,13 @@ type CityIssue struct {
 	UpdatedAt   time.Time           `bson:"updated_at" json:"updated_at"`
 	ResolvedAt  *time.Time          `bson:"resolved_at,omitempty" json:"resolved_at,omitempty"`
 	DuplicateOf *primitive.ObjectID `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	AssignedAt  *time.Time          `bson:"assigned_at,omitempty" json:"assigned_at,omitempty"`
+}
+type IssueStatusChange struct {
+	Status    string             `bson:"status" json:"status"`
+	ChangedBy primitive.ObjectID `bson:"changed_by" json:"changed_by"`
+	ChangedAt time.Time          `bson:"changed_at" json:"changed_at"`
+	Note      string             `bson:"note,omitempty" json:"note,omitempty"`
 }
 
 type IssueComment struct {
@@ -80,10 +93,10 @@ const (
 
 // Приоритеты
 const (
-	IssuePriorityLow      = "low"
-	IssuePriorityMedium   = "medium"
-	IssuePriorityHigh     = "high"
-	IssuePriorityCritical = "critical"
+	PriorityLow      = "low"
+	PriorityMedium   = "medium"
+	PriorityHigh     = "high"
+	PriorityCritical = "critical"
 )
 
 // Методы для работы с проблемами
@@ -97,12 +110,47 @@ func (i *CityIssue) IsInProgress() bool {
 }
 
 func (i *CityIssue) HasUserUpvoted(userID primitive.ObjectID) bool {
-	for _, upvoterID := range i.Upvotes {
+	for _, upvoterID := range i.UpVotes {
 		if upvoterID == userID {
 			return true
 		}
 	}
 	return false
+}
+
+func (i *CityIssue) AddUpvote(userID primitive.ObjectID) bool {
+	if i.HasUserUpvoted(userID) {
+		return false
+	}
+	i.UpVotes = append(i.UpVotes, userID)
+	i.UpVoteCount++
+	i.UpdatedAt = time.Now()
+	return true
+}
+
+func (i *CityIssue) RemoveUpvote(userID primitive.ObjectID) bool {
+	for j, upvoterID := range i.UpVotes {
+		if upvoterID == userID {
+			i.UpVotes = append(i.UpVotes[:j], i.UpVotes[j+1:]...)
+			i.UpVoteCount--
+			i.UpdatedAt = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+// Додавання запису в історію статусу
+func (i *CityIssue) AddStatusChange(status string, changedBy primitive.ObjectID, note string) {
+	change := IssueStatusChange{
+		Status:    status,
+		ChangedBy: changedBy,
+		ChangedAt: time.Now(),
+		Note:      note,
+	}
+	i.StatusHistory = append(i.StatusHistory, change)
+	i.Status = status
+	i.UpdatedAt = time.Now()
 }
 
 func (i *CityIssue) HasUserSubscribed(userID primitive.ObjectID) bool {
@@ -115,7 +163,7 @@ func (i *CityIssue) HasUserSubscribed(userID primitive.ObjectID) bool {
 }
 
 func (i *CityIssue) GetUpvoteCount() int {
-	return len(i.Upvotes)
+	return len(i.UpVotes)
 }
 
 func (i *CityIssue) GetCommentCount() int {
@@ -145,13 +193,13 @@ func (i *CityIssue) GetLatestComment() *IssueComment {
 
 func (i *CityIssue) GetPriorityScore() int {
 	switch i.Priority {
-	case IssuePriorityLow:
+	case PriorityLow:
 		return 1
-	case IssuePriorityMedium:
+	case PriorityMedium:
 		return 2
-	case IssuePriorityHigh:
+	case PriorityHigh:
 		return 3
-	case IssuePriorityCritical:
+	case PriorityCritical:
 		return 4
 	default:
 		return 1
@@ -174,26 +222,6 @@ func (i *CityIssue) CanBeEditedBy(userID primitive.ObjectID, isModerator bool) b
 	}
 	// Обычные пользователи могут редактировать только свои нерешенные проблемы
 	return i.ReporterID == userID && !i.IsResolved()
-}
-
-func (i *CityIssue) AddUpvote(userID primitive.ObjectID) bool {
-	if i.HasUserUpvoted(userID) {
-		return false // Уже проголосовал
-	}
-	i.Upvotes = append(i.Upvotes, userID)
-	i.UpdatedAt = time.Now()
-	return true
-}
-
-func (i *CityIssue) RemoveUpvote(userID primitive.ObjectID) bool {
-	for j, upvoterID := range i.Upvotes {
-		if upvoterID == userID {
-			i.Upvotes = append(i.Upvotes[:j], i.Upvotes[j+1:]...)
-			i.UpdatedAt = time.Now()
-			return true
-		}
-	}
-	return false
 }
 
 func (i *CityIssue) AddSubscriber(userID primitive.ObjectID) bool {
@@ -270,10 +298,10 @@ func GetStatusTranslation(status string) string {
 // Получение переводов приоритетов для UI
 func GetPriorityTranslation(priority string) string {
 	translations := map[string]string{
-		IssuePriorityLow:      "Низкий",
-		IssuePriorityMedium:   "Средний",
-		IssuePriorityHigh:     "Высокий",
-		IssuePriorityCritical: "Критический",
+		PriorityLow:      "Низкий",
+		PriorityMedium:   "Средний",
+		PriorityHigh:     "Высокий",
+		PriorityCritical: "Критический",
 	}
 	if translation, exists := translations[priority]; exists {
 		return translation
