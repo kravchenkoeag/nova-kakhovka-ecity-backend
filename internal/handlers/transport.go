@@ -1001,3 +1001,334 @@ func (h *TransportHandler) updateSchedules() {
 		},
 	)
 }
+
+// GetNearbyStops повертає найближчі зупинки транспорту
+func (h *TransportHandler) GetNearbyStops(c *gin.Context) {
+	lat := c.Query("lat")
+	lng := c.Query("lng")
+	radiusStr := c.DefaultQuery("radius", "1") // радіус в км
+
+	if lat == "" || lng == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Missing coordinates",
+			"details": "Latitude and longitude are required",
+		})
+		return
+	}
+
+	latitude, err := strconv.ParseFloat(lat, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid latitude",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	longitude, err := strconv.ParseFloat(lng, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid longitude",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	radiusKm, _ := strconv.ParseFloat(radiusStr, 64)
+	radiusMeters := radiusKm * 1000
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// MongoDB aggregation для пошуку найближчих зупинок
+	pipeline := mongo.Pipeline{
+		{{Key: "$unwind", Value: "$stops"}},
+		{{Key: "$geoNear", Value: bson.M{
+			"near": bson.M{
+				"type":        "Point",
+				"coordinates": []float64{longitude, latitude},
+			},
+			"distanceField": "distance",
+			"maxDistance":   radiusMeters,
+			"spherical":     true,
+			"key":           "stops.location",
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":      "$stops.name",
+			"location": bson.M{"$first": "$stops.location"},
+			"distance": bson.M{"$min": "$distance"},
+			"routes": bson.M{
+				"$push": bson.M{
+					"route_id":     "$_id",
+					"route_number": "$number",
+					"route_type":   "$type",
+					"route_name":   "$name",
+					"stop_order":   "$stops.stop_order",
+				},
+			},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "distance", Value: 1}}}},
+		{{Key: "$limit", Value: 20}},
+	}
+
+	cursor, err := h.routeCollection.Aggregate(ctx, pipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error finding nearby stops",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var stops []bson.M
+	if err := cursor.All(ctx, &stops); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error decoding stops",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stops": stops,
+		"count": len(stops),
+		"location": gin.H{
+			"lat":    latitude,
+			"lng":    longitude,
+			"radius": radiusKm,
+		},
+	})
+}
+
+// GetArrivals повертає розклад прибуття транспорту на зупинку
+func (h *TransportHandler) GetArrivals(c *gin.Context) {
+	stopName := c.Query("stop")
+	routeNumber := c.Query("route")
+	limit := c.DefaultQuery("limit", "10")
+
+	if stopName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Missing stop name",
+			"details": "Stop name is required",
+		})
+		return
+	}
+
+	limitInt, _ := strconv.Atoi(limit)
+	if limitInt < 1 || limitInt > 50 {
+		limitInt = 10
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Знаходимо маршрути, що проходять через цю зупинку
+	query := bson.M{
+		"stops.name": stopName,
+		"is_active":  true,
+	}
+
+	if routeNumber != "" {
+		query["number"] = routeNumber
+	}
+
+	cursor, err := h.routeCollection.Find(ctx, query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error fetching routes",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var routes []models.TransportRoute
+	if err := cursor.All(ctx, &routes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error decoding routes",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Формуємо список прибуттів
+	var arrivals []gin.H
+	now := time.Now()
+
+	for _, route := range routes {
+		// Знаходимо зупинку в маршруті
+		var stopIndex int = -1
+		for i, stop := range route.Stops {
+			if stop.Name == stopName {
+				stopIndex = i
+				break
+			}
+		}
+
+		if stopIndex == -1 {
+			continue
+		}
+
+		// Знаходимо активні транспортні засоби на цьому маршруті
+		vehicleQuery := bson.M{
+			"route_id":  route.ID,
+			"is_active": true,
+		}
+
+		vehicleCursor, err := h.vehicleCollection.Find(ctx, vehicleQuery)
+		if err != nil {
+			continue
+		}
+
+		var vehicles []models.TransportVehicle
+		if err := vehicleCursor.All(ctx, &vehicles); err != nil {
+			vehicleCursor.Close(ctx)
+			continue
+		}
+		vehicleCursor.Close(ctx)
+
+		// Для кожного транспортного засобу обчислюємо час прибуття
+		for _, vehicle := range vehicles {
+			// Якщо є розклад, використовуємо його
+			nextArrivalTime := now.Add(time.Duration(5+stopIndex*3) * time.Minute) // Примітивний розрахунок
+
+			arrivals = append(arrivals, gin.H{
+				"route_number":   route.Number,
+				"route_name":     route.Name,
+				"route_type":     route.Type,
+				"vehicle_number": vehicle.VehicleNumber,
+				"estimated_time": nextArrivalTime,
+				"minutes_away":   int(nextArrivalTime.Sub(now).Minutes()),
+				"stop_name":      stopName,
+			})
+		}
+	}
+
+	// Сортуємо за часом прибуття
+	// (В продакшн версії тут має бути більш складна логіка)
+
+	// Обмежуємо кількість результатів
+	if len(arrivals) > limitInt {
+		arrivals = arrivals[:limitInt]
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stop":     stopName,
+		"arrivals": arrivals,
+		"count":    len(arrivals),
+		"time":     now,
+	})
+}
+
+// GetLiveTracking повертає поточне положення транспорту в реальному часі
+func (h *TransportHandler) GetLiveTracking(c *gin.Context) {
+	routeIDStr := c.Query("route_id")
+	bounds := c.Query("bounds") // "lat1,lng1,lat2,lng2" для обмеження області
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Базовий запит: тільки активний та онлайн транспорт
+	query := bson.M{
+		"is_active": true,
+		// Транспорт, який оновлювався протягом останніх 5 хвилин
+		"last_update": bson.M{
+			"$gte": time.Now().Add(-5 * time.Minute),
+		},
+	}
+
+	// Фільтр за маршрутом
+	if routeIDStr != "" {
+		routeID, err := primitive.ObjectIDFromHex(routeIDStr)
+		if err == nil {
+			query["route_id"] = routeID
+		}
+	}
+
+	// Фільтр за географічною областю (bounding box)
+	if bounds != "" {
+		parts := strings.Split(bounds, ",")
+		if len(parts) == 4 {
+			lat1, _ := strconv.ParseFloat(parts[0], 64)
+			lng1, _ := strconv.ParseFloat(parts[1], 64)
+			lat2, _ := strconv.ParseFloat(parts[2], 64)
+			lng2, _ := strconv.ParseFloat(parts[3], 64)
+
+			query["current_location"] = bson.M{
+				"$geoWithin": bson.M{
+					"$box": [][]float64{
+						{lng1, lat1}, // Південно-західний кут
+						{lng2, lat2}, // Північно-східний кут
+					},
+				},
+			}
+		}
+	}
+
+	// Знаходимо транспортні засоби
+	cursor, err := h.vehicleCollection.Find(ctx, query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error fetching live vehicles",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var vehicles []models.TransportVehicle
+	if err := cursor.All(ctx, &vehicles); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Error decoding vehicles",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Збагачуємо дані інформацією про маршрути
+	type LiveVehicle struct {
+		VehicleID     primitive.ObjectID `json:"vehicle_id"`
+		VehicleNumber string             `json:"vehicle_number"`
+		Type          string             `json:"type"`
+		RouteID       primitive.ObjectID `json:"route_id"`
+		RouteNumber   string             `json:"route_number"`
+		RouteName     string             `json:"route_name"`
+		Location      models.Location    `json:"location"`
+		Speed         float64            `json:"speed,omitempty"`
+		Heading       float64            `json:"heading,omitempty"`
+		LastUpdate    time.Time          `json:"last_update"`
+		Occupancy     string             `json:"occupancy,omitempty"` // low, medium, high
+	}
+
+	var liveVehicles []LiveVehicle
+	for _, vehicle := range vehicles {
+		// Отримуємо інформацію про маршрут
+		var route models.TransportRoute
+		err := h.routeCollection.FindOne(ctx, bson.M{"_id": vehicle.RouteID}).Decode(&route)
+		if err != nil {
+			continue // Пропускаємо якщо маршрут не знайдено
+		}
+
+		liveVehicle := LiveVehicle{
+			VehicleID:     vehicle.ID,
+			VehicleNumber: vehicle.VehicleNumber,
+			Type:          vehicle.Type,
+			RouteID:       vehicle.RouteID,
+			RouteNumber:   route.Number,
+			RouteName:     route.Name,
+			Location:      vehicle.CurrentLocation,
+			Speed:         vehicle.Speed,
+			Heading:       vehicle.Heading,
+			LastUpdate:    *vehicle.LastUpdate,
+		}
+
+		liveVehicles = append(liveVehicles, liveVehicle)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"live_vehicles": liveVehicles,
+		"count":         len(liveVehicles),
+		"timestamp":     time.Now(),
+	})
+}

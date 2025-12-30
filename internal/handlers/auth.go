@@ -365,3 +365,83 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 		"message": "Profile updated successfully",
 	})
 }
+
+// ChangePassword змінює пароль користувача
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	type ChangePasswordRequest struct {
+		OldPassword string `json:"old_password" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+
+	var req ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Отримуємо ID користувача з контексту
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Unauthorized",
+		})
+		return
+	}
+
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Знаходимо користувача
+	var user models.User
+	err := h.userCollection.FindOne(ctx, bson.M{"_id": userIDObj}).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	// Перевіряємо старий пароль
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Incorrect old password",
+		})
+		return
+	}
+
+	// Хешуємо новий пароль
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error hashing password",
+		})
+		return
+	}
+
+	// Оновлюємо пароль
+	_, err = h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": userIDObj},
+		bson.M{
+			"$set": bson.M{
+				"password_hash": string(hashedPassword),
+				"updated_at":    time.Now(),
+			},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating password",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password changed successfully",
+	})
+}

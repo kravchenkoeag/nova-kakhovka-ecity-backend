@@ -388,3 +388,240 @@ func (h *GroupHandler) GetMessages(c *gin.Context) {
 
 	c.JSON(http.StatusOK, messages)
 }
+
+// GetGroup повертає детальну інформацію про групу
+func (h *GroupHandler) GetGroup(c *gin.Context) {
+	groupID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid group ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var group models.Group
+	err = h.groupCollection.FindOne(ctx, bson.M{"_id": groupID}).Decode(&group)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Group not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching group",
+		})
+		return
+	}
+
+	// Перевіряємо чи користувач є членом групи (для приватних груп)
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	if !group.IsPublic {
+		isMember := false
+		for _, memberID := range group.Members {
+			if memberID == userIDObj {
+				isMember = true
+				break
+			}
+		}
+
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You don't have access to this group",
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, group)
+}
+
+// UpdateGroup оновлює інформацію про групу
+func (h *GroupHandler) UpdateGroup(c *gin.Context) {
+	groupID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid group ID",
+		})
+		return
+	}
+
+	type UpdateGroupRequest struct {
+		Name        string `json:"name,omitempty"`
+		Description string `json:"description,omitempty"`
+		IsPublic    *bool  `json:"is_public,omitempty"`
+	}
+
+	var req UpdateGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid request data",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач є адміном групи
+	var group models.Group
+	err = h.groupCollection.FindOne(ctx, bson.M{"_id": groupID}).Decode(&group)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Group not found",
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	if group.CreatorID != userIDObj {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only group creator can update the group",
+		})
+		return
+	}
+
+	// Формуємо оновлення
+	update := bson.M{
+		"updated_at": time.Now(),
+	}
+
+	if req.Name != "" {
+		update["name"] = req.Name
+	}
+	if req.Description != "" {
+		update["description"] = req.Description
+	}
+	if req.IsPublic != nil {
+		update["is_public"] = *req.IsPublic
+	}
+
+	_, err = h.groupCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": groupID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating group",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Group updated successfully",
+	})
+}
+
+// DeleteGroup видаляє групу
+func (h *GroupHandler) DeleteGroup(c *gin.Context) {
+	groupID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid group ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо права
+	var group models.Group
+	err = h.groupCollection.FindOne(ctx, bson.M{"_id": groupID}).Decode(&group)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Group not found",
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	if group.CreatorID != userIDObj {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only group creator can delete the group",
+		})
+		return
+	}
+
+	// Видаляємо групу
+	_, err = h.groupCollection.DeleteOne(ctx, bson.M{"_id": groupID})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error deleting group",
+		})
+		return
+	}
+
+	// Видаляємо всі повідомлення групи
+	h.messageCollection.DeleteMany(ctx, bson.M{"group_id": groupID})
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Group deleted successfully",
+	})
+}
+
+// LeaveGroup дозволяє користувачу покинути групу
+func (h *GroupHandler) LeaveGroup(c *gin.Context) {
+	groupID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid group ID",
+		})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userIDObj := userID.(primitive.ObjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо чи користувач є членом групи
+	var group models.Group
+	err = h.groupCollection.FindOne(ctx, bson.M{"_id": groupID}).Decode(&group)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Group not found",
+		})
+		return
+	}
+
+	// Творець групи не може її покинути
+	if group.CreatorID == userIDObj {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Group creator cannot leave the group",
+		})
+		return
+	}
+
+	// Видаляємо користувача зі списку членів
+	_, err = h.groupCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": groupID},
+		bson.M{
+			"$pull": bson.M{"members": userIDObj},
+			"$inc":  bson.M{"member_count": -1},
+			"$set":  bson.M{"updated_at": time.Now()},
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error leaving group",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Successfully left the group",
+	})
+}
