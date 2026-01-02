@@ -21,6 +21,7 @@ type NotificationHandler struct {
 	notificationService    *services.NotificationService
 	notificationCollection *mongo.Collection
 	deviceTokenCollection  *mongo.Collection
+	userCollection         *mongo.Collection
 }
 
 type RegisterDeviceTokenRequest struct {
@@ -42,11 +43,15 @@ type SendEmergencyNotificationRequest struct {
 	Data  map[string]interface{} `json:"data,omitempty"`
 }
 
-func NewNotificationHandler(notificationService *services.NotificationService, notificationCollection, deviceTokenCollection *mongo.Collection) *NotificationHandler {
+func NewNotificationHandler(
+	notificationService *services.NotificationService,
+	notificationCollection, deviceTokenCollection *mongo.Collection,
+) *NotificationHandler {
 	return &NotificationHandler{
 		notificationService:    notificationService,
 		notificationCollection: notificationCollection,
 		deviceTokenCollection:  deviceTokenCollection,
+		userCollection:         notificationCollection.Database().Collection("users"),
 	}
 }
 
