@@ -11,7 +11,7 @@ type TransportRoute struct {
 	ID            primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	RouteNumber   string             `bson:"route_number" json:"route_number" validate:"required"`
 	RouteName     string             `bson:"route_name" json:"route_name" validate:"required,min=5,max=200"`
-	TransportType string             `bson:"transport_type" json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
+	TransportType string             `bson:"transport_type" json:"transport_type" validate:"required,one of=bus trolley minibus taxi"`
 	RoutePoints   []Location         `bson:"route_points" json:"route_points"`
 
 	Color       string `bson:"color,omitempty" json:"color,omitempty"`
@@ -73,7 +73,7 @@ type TransportVehicle struct {
 	RouteID       primitive.ObjectID `bson:"route_id" json:"route_id" validate:"required"`
 
 	// Характеристики транспорта
-	TransportType     string `bson:"transport_type" json:"transport_type" validate:"required,oneof=bus trolley minibus taxi"`
+	TransportType     string `bson:"transport_type" json:"transport_type" validate:"required,one of=bus trolley minibus taxi"`
 	Model             string `bson:"model" json:"model"`
 	Capacity          int    `bson:"capacity" json:"capacity"` // Вместимость пассажиров
 	IsAccessible      bool   `bson:"is_accessible" json:"is_accessible"`

@@ -523,14 +523,14 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 
 	now := time.Now()
 	vehicle := models.TransportVehicle{
-		RouteID:           routeID,
-		VehicleNumber:     req.VehicleNumber,
-		TransportType:     req.Type,
-		Model:             req.Model,
-		Capacity:          req.Capacity,
-		CurrentLocation:   req.CurrentLocation,
-		IsActive:          req.IsActive,
-		IsOnline:          false,
+		RouteID:         routeID,
+		VehicleNumber:   req.VehicleNumber,
+		TransportType:   req.Type,
+		Model:           req.Model,
+		Capacity:        req.Capacity,
+		CurrentLocation: req.CurrentLocation,
+		IsActive:        req.IsActive,
+		//IsOnline:          false,
 		LastUpdate:        now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
