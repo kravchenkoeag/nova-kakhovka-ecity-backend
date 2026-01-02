@@ -56,13 +56,13 @@ type CreatePollRequest struct {
 
 // CreatePollQuestion структура питання для створення опроса
 type CreatePollQuestion struct {
-	Text       string              `json:"text" validate:"required,min=5,max=500"`
-	Type       models.QuestionType `json:"type" validate:"required,oneof=single_choice multiple_choice text rating yes_no"`
-	IsRequired bool                `json:"is_required"`
-	Options    []CreatePollOption  `json:"options"`
-	MinRating  int                 `json:"min_rating,omitempty"`
-	MaxRating  int                 `json:"max_rating,omitempty"`
-	MaxLength  int                 `json:"max_length,omitempty"`
+	Text       string             `json:"text" validate:"required,min=5,max=500"`
+	Type       string             `json:"type" validate:"required,oneof=single_choice multiple_choice rating text scale yes_no"`
+	IsRequired bool               `json:"is_required"`
+	Options    []CreatePollOption `json:"options"`
+	MinRating  int                `json:"min_rating,omitempty"`
+	MaxRating  int                `json:"max_rating,omitempty"`
+	MaxLength  int                `json:"max_length,omitempty"`
 }
 
 // CreatePollOption структура опції відповіді для питання
@@ -265,9 +265,8 @@ func (h *PollHandler) CreatePoll(c *gin.Context) {
 
 			for _, opt := range q.Options {
 				option := models.PollOption{
-					ID:    primitive.NewObjectID(),
-					Text:  opt.Text,
-					Votes: 0,
+					ID:   primitive.NewObjectID(),
+					Text: opt.Text,
 				}
 				question.Options = append(question.Options, option)
 			}
@@ -781,7 +780,7 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 	// Перевірка, чи користувач вже голосував
 	if !poll.AllowMultiple {
 		for _, response := range poll.Responses {
-			if response.UserID != nil && *response.UserID == userIDObj {
+			if response.UserID == userIDObj { // ✅ UserID НЕ вказівник
 				c.JSON(http.StatusConflict, gin.H{
 					"error":   "Already voted",
 					"details": "You have already voted in this poll",
@@ -793,14 +792,19 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 
 	// Створення відповіді
 	response := models.PollResponse{
-		ID:        primitive.NewObjectID(),
-		Answers:   []models.PollAnswer{},
-		CreatedAt: now,
+		ID:          primitive.NewObjectID(),
+		PollID:      pollID,
+		Answers:     []models.PollAnswer{},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		SubmittedAt: now,
 	}
 
 	// Якщо опрос не анонімний, зберігаємо ID користувача
 	if !poll.IsAnonymous {
-		response.UserID = &userIDObj
+		response.UserID = userIDObj
+	} else {
+		response.UserID = primitive.NilObjectID // ✅ Для анонімних
 	}
 
 	// Обробка кожної відповіді
@@ -926,23 +930,28 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 			pollAnswer.OptionIDs = optionIDs
 
 		case models.QuestionTypeText:
-			if answer.TextAnswer == nil && question.IsRequired {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error":   "Missing required answer",
-					"details": fmt.Sprintf("Question '%s' is required", question.Text),
-				})
-				return
-			}
-			if answer.TextAnswer != nil {
-				if question.MaxLength > 0 && len(*answer.TextAnswer) > question.MaxLength {
+			if answer.TextAnswer == nil || *answer.TextAnswer == "" {
+				if question.IsRequired {
 					c.JSON(http.StatusBadRequest, gin.H{
-						"error":   "Text too long",
-						"details": fmt.Sprintf("Answer exceeds maximum length of %d characters", question.MaxLength),
+						"error":   "Missing required answer",
+						"details": fmt.Sprintf("Question '%s' is required", question.Text),
 					})
 					return
 				}
+				pollAnswer.TextAnswer = ""
+			} else {
+				textValue := *answer.TextAnswer // ✅ Розіменувати
+
+				if question.MaxLength > 0 && len(textValue) > question.MaxLength {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":   "Text too long",
+						"details": fmt.Sprintf("Answer exceeds maximum length of %d", question.MaxLength),
+					})
+					return
+				}
+
+				pollAnswer.TextAnswer = textValue // ✅ Присвоїти string
 			}
-			pollAnswer.TextAnswer = answer.TextAnswer
 
 		case models.QuestionTypeRating:
 			if answer.NumberAnswer == nil && question.IsRequired {
@@ -998,22 +1007,22 @@ func (h *PollHandler) VotePoll(c *gin.Context) {
 	}
 
 	// Оновлення лічильників голосів для вибраних опцій
-	for _, answer := range response.Answers {
-		for _, optionID := range answer.OptionIDs {
-			// Пошук питання та опції
-			for i, question := range poll.Questions {
-				if question.ID == answer.QuestionID {
-					for j, option := range question.Options {
-						if option.ID == optionID {
-							poll.Questions[i].Options[j].Votes++
-							break
-						}
-					}
-					break
-				}
-			}
-		}
-	}
+	//for _, answer := range response.Answers {
+	//	for _, optionID := range answer.OptionIDs {
+	//		// Пошук питання та опції
+	//		for i, question := range poll.Questions {
+	//			if question.ID == answer.QuestionID {
+	//				for j, option := range question.Options {
+	//					if option.ID == optionID {
+	//						poll.Questions[i].Options[j].Votes++
+	//						break
+	//					}
+	//				}
+	//				break
+	//			}
+	//		}
+	//	}
+	//}
 
 	// Додавання відповіді до опроса
 	poll.Responses = append(poll.Responses, response)
@@ -1139,9 +1148,9 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 			textAnswers := []gin.H{}
 			for _, response := range poll.Responses {
 				for _, answer := range response.Answers {
-					if answer.QuestionID == question.ID && answer.TextAnswer != nil {
+					if answer.QuestionID == question.ID && answer.TextAnswer != "" {
 						textAnswers = append(textAnswers, gin.H{
-							"text":       *answer.TextAnswer,
+							"text":       answer.TextAnswer,
 							"created_at": response.CreatedAt,
 						})
 					}
@@ -1261,7 +1270,7 @@ func (h *PollHandler) GetPollStats(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pollCollection := h.db.Collection("polls")
+	pollCollection := h.pollCollection
 
 	// Загальна кількість опитувань
 	totalPolls, err := pollCollection.CountDocuments(ctx, bson.M{})

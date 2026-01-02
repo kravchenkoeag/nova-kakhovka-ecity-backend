@@ -523,15 +523,17 @@ func (h *TransportHandler) CreateVehicle(c *gin.Context) {
 
 	now := time.Now()
 	vehicle := models.TransportVehicle{
-		RouteID:         routeID,
-		VehicleNumber:   req.VehicleNumber,
-		TransportType:   req.Type,
-		Model:           req.Model,
-		Capacity:        req.Capacity,
-		CurrentLocation: req.CurrentLocation,
-		IsActive:        req.IsActive,
-		//IsOnline:          false,
-		LastUpdate:        now,
+		RouteID:           routeID,
+		VehicleNumber:     req.VehicleNumber,
+		TransportType:     req.Type,
+		Model:             req.Model,
+		Capacity:          req.Capacity,
+		CurrentLocation:   req.CurrentLocation,
+		IsActive:          req.IsActive,
+		IsOnline:          false,
+		LastUpdate:        &now,
+		Status:            models.VehicleStatusActive,
+		IsTracked:         false,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		HasAirConditioner: req.HasAirConditioner,
@@ -728,13 +730,15 @@ func (h *TransportHandler) UpdateVehicleLocation(c *gin.Context) {
 	defer cancel()
 
 	// Обновляем местоположение и статус онлайн
+	now := time.Now()
 	update := bson.M{
 		"$set": bson.M{
 			"current_location": req.Location,
 			"speed":            req.Speed,
 			"heading":          req.Heading,
 			"is_online":        true,
-			"last_update_time": time.Now(),
+			"last_update":      &now,
+			"updated_at":       now,
 		},
 	}
 
@@ -775,7 +779,7 @@ func (h *TransportHandler) GetLiveVehicles(c *gin.Context) {
 		"is_active": true,
 		"is_online": true,
 		// Только транспорт, который обновлялся в последние 5 минут
-		"last_update_time": bson.M{
+		"last_update": bson.M{
 			"$gte": time.Now().Add(-5 * time.Minute),
 		},
 	}
@@ -990,7 +994,7 @@ func (h *TransportHandler) updateSchedules() {
 		ctx,
 		bson.M{
 			"is_online": true,
-			"last_update_time": bson.M{
+			"last_update": bson.M{
 				"$lt": time.Now().Add(-10 * time.Minute),
 			},
 		},

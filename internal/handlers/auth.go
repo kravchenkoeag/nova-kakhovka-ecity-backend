@@ -22,7 +22,7 @@ type AuthHandler struct {
 	jwtManager     *auth.JWTManager
 }
 
-// ✅ Request structures
+// Request structures
 type RegisterRequest struct {
 	Email     string `json:"email" binding:"required,email"`
 	Password  string `json:"password" binding:"required,min=6,max=100"`
@@ -36,10 +36,19 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-// ✅ Response structure з правильними JSON tags
+// Response structures
 type AuthResponse struct {
 	Token string       `json:"token"`
 	User  *models.User `json:"user"`
+}
+
+// ← ДОДАНО: Структура для відповіді при блокуванні
+type BlockedUserResponse struct {
+	Error       string     `json:"error"`
+	IsBlocked   bool       `json:"is_blocked"`
+	BlockReason string     `json:"block_reason,omitempty"`
+	BlockedAt   *time.Time `json:"blocked_at,omitempty"`
+	Message     string     `json:"message"`
 }
 
 func NewAuthHandler(userCollection *mongo.Collection, jwtManager *auth.JWTManager) *AuthHandler {
@@ -96,9 +105,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		FirstName:    req.FirstName,
 		LastName:     req.LastName,
 
-		// ✅ НОВИЙ КОД: Встановлюємо роль за замовчуванням
-		Role:        string(models.RoleUser), // За замовчуванням USER
-		IsModerator: false,                   // Legacy support
+		// Встановлюємо роль за замовчуванням
+		Role:        string(models.RoleUser),
+		IsModerator: false,
 
 		IsVerified: false,
 		IsBlocked:  false,
@@ -125,12 +134,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	user.ID = result.InsertedID.(primitive.ObjectID)
 
 	// Генеруємо JWT токен
-	// ✅ 4 параметри: userID, email, role, isModerator
 	token, err := h.jwtManager.GenerateToken(
-		user.ID.Hex(),    // userID: string
-		user.Email,       // email: string
-		user.Role,        // role: string
-		user.IsModerator, // isModerator: bool
+		user.ID.Hex(),
+		user.Email,
+		user.Role,
+		user.IsModerator,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -139,10 +147,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// ✅ ПРАВИЛЬНО: Використовуємо структуру AuthResponse
 	c.JSON(http.StatusCreated, AuthResponse{
 		Token: token,
-		User:  &user, // User struct має всі поля включно з Role
+		User:  &user,
 	})
 }
 
@@ -173,20 +180,20 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Перевіряємо чи користувач заблокований
 	if user.IsBlocked {
 		// Формуємо детальну відповідь для заблокованого користувача
-		response := models.BlockedUserResponse{
+		response := BlockedUserResponse{
 			Error:     "Account is blocked",
 			IsBlocked: true,
 			Message:   "Ваш акаунт заблоковано. Будь ласка, зверніться до модератора для отримання додаткової інформації.",
 		}
 
-		// Додаємо причину блокування, якщо вона є
-		if user.BlockReason != "" {
-			response.BlockReason = user.BlockReason
+		// ← ВИПРАВЛЕНО: Перевіряємо чи BlockReason є вказівником
+		if user.BlockReason != nil && *user.BlockReason != "" {
+			response.BlockReason = *user.BlockReason
 		}
 
 		// Додаємо час блокування, якщо він є
 		if user.BlockedAt != nil {
-			response.BlockedAt = *user.BlockedAt
+			response.BlockedAt = user.BlockedAt
 		}
 
 		c.JSON(http.StatusForbidden, response)
@@ -202,9 +209,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// ✅ МІГРАЦІЯ: Якщо у користувача немає ролі (legacy users)
+	// Міграція: Якщо у користувача немає ролі (legacy users)
 	if user.Role == "" {
-		// Встановлюємо роль на основі is_moderator
 		if user.IsModerator {
 			user.Role = string(models.RoleModerator)
 		} else {
@@ -219,7 +225,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		)
 		if err != nil {
 			// Логуємо помилку, але не блокуємо login
-			// Користувач все одно зможе увійти
 			println("Warning: Failed to migrate user role:", err.Error())
 		}
 	}
@@ -231,7 +236,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		bson.M{"_id": user.ID},
 		bson.M{"$set": bson.M{"last_login_at": now}},
 	)
-	// Ігноруємо помилку - не критично
 
 	// Генеруємо JWT токен
 	token, err := h.jwtManager.GenerateToken(
@@ -247,10 +251,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// ✅ ПРАВИЛЬНО: Використовуємо структуру AuthResponse
 	c.JSON(http.StatusOK, AuthResponse{
 		Token: token,
-		User:  &user, // User struct має всі поля включно з Role
+		User:  &user,
 	})
 }
 

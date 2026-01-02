@@ -453,3 +453,75 @@ func (ns *NotificationService) markNotificationAsSent(ctx context.Context, notif
 		"$set": bson.M{"is_sent": true},
 	})
 }
+
+// NotifyNewPoll надсилає повідомлення про новий опрос цільовим групам
+func (ns *NotificationService) NotifyNewPoll(pollID primitive.ObjectID, targetGroups []primitive.ObjectID) error {
+	if len(targetGroups) == 0 {
+		return nil // Немає цільових груп
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Отримуємо інформацію про опрос
+	pollCollection := ns.userCollection.Database().Collection("polls")
+	var poll struct {
+		Title       string             `bson:"title"`
+		Description string             `bson:"description"`
+		CreatorID   primitive.ObjectID `bson:"creator_id"`
+	}
+
+	err := pollCollection.FindOne(ctx, bson.M{"_id": pollID}).Decode(&poll)
+	if err != nil {
+		return fmt.Errorf("failed to get poll: %w", err)
+	}
+
+	// Знаходимо всіх користувачів з цільових груп
+	var userIDs []primitive.ObjectID
+	for _, groupID := range targetGroups {
+		cursor, err := ns.userCollection.Find(ctx, bson.M{
+			"groups":     groupID,
+			"is_blocked": false,
+		})
+		if err != nil {
+			continue
+		}
+
+		for cursor.Next(ctx) {
+			var user models.User
+			if err := cursor.Decode(&user); err != nil {
+				continue
+			}
+
+			// Перевіряємо чи користувач вже не в списку
+			exists := false
+			for _, uid := range userIDs {
+				if uid == user.ID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				userIDs = append(userIDs, user.ID)
+			}
+		}
+		cursor.Close(ctx)
+	}
+
+	if len(userIDs) == 0 {
+		return nil // Немає користувачів для сповіщення
+	}
+
+	// Формуємо дані для повідомлення
+	data := map[string]interface{}{
+		"type":    "poll",
+		"poll_id": pollID.Hex(),
+		"action":  "open_poll",
+	}
+
+	title := "Нове опитування"
+	body := fmt.Sprintf("Доступне нове опитування: %s", poll.Title)
+
+	// Надсилаємо повідомлення
+	return ns.SendNotificationToUsers(ctx, userIDs, title, body, "poll", data, &pollID)
+}
