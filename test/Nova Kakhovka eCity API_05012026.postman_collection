@@ -1,0 +1,3022 @@
+{
+	"info": {
+		"_postman_id": "e6987364-c8ec-41bc-8cd4-57dfd3d9b1c5",
+		"name": "Nova Kakhovka eCity API",
+		"description": "Полная коллекция для тестирования API электронного города Новая Каховка",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "26894111"
+	},
+	"item": [
+		{
+			"name": "01. Health & Info",
+			"item": [
+				{
+					"name": "Health Check",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has status ok\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql('ok');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Проверка работоспособности сервера"
+					},
+					"response": []
+				},
+				{
+					"name": "API Info",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has version\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('version');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api"
+							]
+						},
+						"description": "Получение информации об API"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "02. Authentication",
+			"item": [
+				{
+					"name": "Register User",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"user_id\", jsonData.id);",
+									"    console.log(\"User ID saved:\", jsonData.id);",
+									"    ",
+									"    pm.test(\"User created successfully\", function () {",
+									"        pm.expect(jsonData).to.have.property('id');",
+									"        pm.expect(jsonData).to.have.property('email');",
+									"    });",
+									"} else if (pm.response.code === 400) {",
+									"    console.log(\"User already exists - это нормально\");",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\",\n  \"first_name\": \"Иван\",\n  \"last_name\": \"Иванов\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"register"
+							]
+						},
+						"description": "Регистрация нового пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"token\", jsonData.token);",
+									"    pm.collectionVariables.set(\"user_id\", jsonData.user.id);",
+									"    console.log(\"Token saved:\", jsonData.token);",
+									"    console.log(\"User ID saved:\", jsonData.user.id);",
+									"    ",
+									"    pm.test(\"Login successful\", function () {",
+									"        pm.response.to.have.status(200);",
+									"        pm.expect(jsonData).to.have.property('token');",
+									"        pm.expect(jsonData).to.have.property('user');",
+									"    });",
+									"} else {",
+									"    pm.test(\"Login failed\", function () {",
+									"        console.log(\"Error:\", pm.response.text());",
+									"    });",
+									"}"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"moderator@example.com\",\n    \"password\": \"moderator123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"login"
+							]
+						},
+						"description": "Вход в систему и получение JWT токена"
+					},
+					"response": []
+				},
+				{
+					"name": "Register Moderator",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"moderator@example.com\",\n  \"password\": \"moderator123\",\n  \"first_name\": \"Модератор\",\n  \"last_name\": \"Тестовый\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"register"
+							]
+						},
+						"description": "Регистрация модератора для тестирования"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "03. User Profile",
+			"item": [
+				{
+					"name": "Get Profile",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Profile has required fields\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('id');",
+									"    pm.expect(jsonData).to.have.property('email');",
+									"    pm.expect(jsonData).to.have.property('first_name');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"profile"
+							]
+						},
+						"description": "Получение профиля текущего пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Profile",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"first_name\": \"Петр\",\n  \"last_name\": \"Петров\",\n  \"phone\": \"+380501234567\",\n  \"bio\": \"Тестовый пользователь eCity\",\n  \"date_of_birth\": \"1990-01-15\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"profile"
+							]
+						},
+						"description": "Обновление профиля пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Location",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"country\": \"Украина\",\n    \"region\": \"Херсонская область\",\n    \"city\": \"Новая Каховка\"\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"profile"
+							]
+						},
+						"description": "Обновление геолокации пользователя"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "04. Groups",
+			"item": [
+				{
+					"name": "Get All Groups",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups"
+							]
+						},
+						"description": "Получение списка всех групп"
+					},
+					"response": []
+				},
+				{
+					"name": "Create City Group",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"group_id\", jsonData.id);",
+									"    console.log(\"Group ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Новая Каховка - Центр\",\n  \"description\": \"Группа для жителей центральной части города. Обсуждаем новости, события и проблемы района.\",\n  \"type\": \"city\",\n  \"location_filter\": \"Новая Каховка, Центр\",\n  \"is_public\": true,\n  \"auto_join\": true,\n  \"max_members\": 5000\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups"
+							]
+						},
+						"description": "Создание городской группы"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Interest Group",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Спорт и здоровье\",\n  \"description\": \"Группа для любителей активного образа жизни, спорта и здорового питания\",\n  \"type\": \"interest\",\n  \"interest_filter\": [\"спорт\", \"здоровье\", \"фитнес\"],\n  \"is_public\": true,\n  \"auto_join\": false,\n  \"max_members\": 1000\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups"
+							]
+						},
+						"description": "Создание группы по интересам"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Group by ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}"
+							]
+						},
+						"description": "Получение информации о конкретной группе"
+					},
+					"response": []
+				},
+				{
+					"name": "Join Group",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/join",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}",
+								"join"
+							]
+						},
+						"description": "Присоединиться к группе"
+					},
+					"response": []
+				},
+				{
+					"name": "Leave Group",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/leave",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}",
+								"leave"
+							]
+						},
+						"description": "Покинуть группу"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Group",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Новая Каховка - Центр (Обновлено)\",\n  \"description\": \"Обновленное описание группы\",\n  \"is_public\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}"
+							]
+						},
+						"description": "Обновление информации о группе (только для админов)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Group",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}"
+							]
+						},
+						"description": "Удаление группы (только для админов)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "05. Messages",
+			"item": [
+				{
+					"name": "Get Group Messages",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/messages?limit=50",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}",
+								"messages"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Получение сообщений группы"
+					},
+					"response": []
+				},
+				{
+					"name": "Send Text Message",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"content\": \"Привет всем! Это тестовое сообщение в группу.\",\n  \"type\": \"text\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/messages",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}",
+								"messages"
+							]
+						},
+						"description": "Отправка текстового сообщения в группу"
+					},
+					"response": []
+				},
+				{
+					"name": "Send Message with Image",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"content\": \"Смотрите какое фото!\",\n  \"type\": \"image\",\n  \"media_url\": \"https://example.com/image.jpg\",\n  \"media_type\": \"image/jpeg\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/messages",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"groups",
+								"{{group_id}}",
+								"messages"
+							]
+						},
+						"description": "Отправка сообщения с изображением"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "06. Events",
+			"item": [
+				{
+					"name": "Get All Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events"
+							]
+						},
+						"description": "Получение списка всех событий"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Cultural Event",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"event_id\", jsonData.id);",
+									"    console.log(\"Event ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Концерт в городском парке\",\n  \"description\": \"Открытый концерт местных музыкантов. Вход свободный для всех желающих. Начало в 18:00.\",\n  \"category\": \"cultural\",\n  \"start_date\": \"2025-10-15T18:00:00Z\",\n  \"end_date\": \"2025-10-15T21:00:00Z\",\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"country\": \"Украина\",\n    \"city\": \"Новая Каховка\"\n  },\n  \"address\": \"Городской парк культуры и отдыха\",\n  \"venue\": \"Летняя эстрада\",\n  \"is_online\": false,\n  \"is_public\": true,\n  \"is_free\": true,\n  \"max_participants\": 500,\n  \"contact_info\": [\n    {\n      \"type\": \"phone\",\n      \"value\": \"+380501234567\",\n      \"label\": \"Организатор\"\n    }\n  ],\n  \"tags\": [\"музыка\", \"концерт\", \"парк\", \"культура\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events"
+							]
+						},
+						"description": "Создание культурного события"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Educational Event",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Мастер-класс по программированию\",\n  \"description\": \"Бесплатный вводный курс по веб-разработке для начинающих. Изучим основы HTML, CSS и JavaScript.\",\n  \"category\": \"workshop\",\n  \"start_date\": \"2025-10-20T10:00:00Z\",\n  \"end_date\": \"2025-10-20T14:00:00Z\",\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"country\": \"Украина\",\n    \"city\": \"Новая Каховка\"\n  },\n  \"address\": \"ул. Ленина, 15\",\n  \"venue\": \"IT-центр\",\n  \"is_online\": true,\n  \"online_url\": \"https://zoom.us/j/123456789\",\n  \"is_public\": true,\n  \"is_free\": true,\n  \"max_participants\": 30,\n  \"min_age\": 14,\n  \"requirements\": \"Наличие ноутбука, базовые навыки работы с компьютером\",\n  \"tags\": [\"программирование\", \"IT\", \"обучение\", \"веб-разработка\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events"
+							]
+						},
+						"description": "Создание образовательного мероприятия"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Event by ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"{{event_id}}"
+							]
+						},
+						"description": "Получение информации о событии"
+					},
+					"response": []
+				},
+				{
+					"name": "Join Event",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/join",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"{{event_id}}",
+								"join"
+							]
+						},
+						"description": "Присоединиться к событию"
+					},
+					"response": []
+				},
+				{
+					"name": "Leave Event",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/leave",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"{{event_id}}",
+								"leave"
+							]
+						},
+						"description": "Покинуть событие (отменить участие)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Event",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Концерт в городском парке (обновлено)\",\n  \"description\": \"Обновленное описание события\",\n  \"max_participants\": 600\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"{{event_id}}"
+							]
+						},
+						"description": "Обновление информации о событии (только для организатора)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Event",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"{{event_id}}"
+							]
+						},
+						"description": "Удаление события (только для организатора)"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Events by Category",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events?category=cultural&limit=20",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "cultural",
+									"description": "Фильтр по категории: cultural, educational, social, business, sports, charity, meeting, workshop, conference"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Поиск событий по категории"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "07. Notifications",
+			"item": [
+				{
+					"name": "Get All Notifications",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notifications",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notifications"
+							]
+						},
+						"description": "Получение всех уведомлений пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Mark Notification as Read",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notifications/:id/read",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notifications",
+								":id",
+								"read"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "notification_id_here"
+								}
+							]
+						},
+						"description": "Отметить уведомление как прочитанное"
+					},
+					"response": []
+				},
+				{
+					"name": "Mark All as Read",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notifications/read-all",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notifications",
+								"read-all"
+							]
+						},
+						"description": "Отметить все уведомления как прочитанные"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Notification",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notifications/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notifications",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "notification_id_here"
+								}
+							]
+						},
+						"description": "Удалить уведомление"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "08. Search & Filters",
+			"item": [
+				{
+					"name": "Search Users",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/search/users?q=Иван&limit=10",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"search",
+								"users"
+							],
+							"query": [
+								{
+									"key": "q",
+									"value": "Иван",
+									"description": "Поисковый запрос"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Поиск пользователей по имени"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Groups",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/search/groups?q=Новая&type=city",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"search",
+								"groups"
+							],
+							"query": [
+								{
+									"key": "q",
+									"value": "Новая"
+								},
+								{
+									"key": "type",
+									"value": "city",
+									"description": "Тип группы: country, region, city, interest"
+								}
+							]
+						},
+						"description": "Поиск групп"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/search/events?q=концерт&category=cultural&date_from=2025-10-01",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"search",
+								"events"
+							],
+							"query": [
+								{
+									"key": "q",
+									"value": "концерт"
+								},
+								{
+									"key": "category",
+									"value": "cultural"
+								},
+								{
+									"key": "date_from",
+									"value": "2025-10-01"
+								}
+							]
+						},
+						"description": "Поиск событий"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Nearby Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/events/nearby?lat=46.7545&lng=33.3606&radius=5000",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"events",
+								"nearby"
+							],
+							"query": [
+								{
+									"key": "lat",
+									"value": "46.7545",
+									"description": "Широта"
+								},
+								{
+									"key": "lng",
+									"value": "33.3606",
+									"description": "Долгота"
+								},
+								{
+									"key": "radius",
+									"value": "5000",
+									"description": "Радиус в метрах"
+								}
+							]
+						},
+						"description": "Получение ближайших событий по геолокации"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "09. Moderation (Admin)",
+			"item": [
+				{
+					"name": "Get Pending Posts",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/moderation/posts/pending",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"moderation",
+								"posts",
+								"pending"
+							]
+						},
+						"description": "Получение постов ожидающих модерации (только для модераторов)"
+					},
+					"response": []
+				},
+				{
+					"name": "Approve Post",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/moderation/posts/:id/approve",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"moderation",
+								"posts",
+								":id",
+								"approve"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "post_id_here"
+								}
+							]
+						},
+						"description": "Одобрить пост (только модераторы)"
+					},
+					"response": []
+				},
+				{
+					"name": "Reject Post",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Нарушение правил сообщества: спам\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/moderation/posts/:id/reject",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"moderation",
+								"posts",
+								":id",
+								"reject"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "post_id_here"
+								}
+							]
+						},
+						"description": "Отклонить пост (только модераторы)"
+					},
+					"response": []
+				},
+				{
+					"name": "Ban User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Нарушение правил сообщества\",\n  \"duration_days\": 7\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/moderation/users/:id/ban",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"moderation",
+								"users",
+								":id",
+								"ban"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "user_id_here"
+								}
+							]
+						},
+						"description": "Забанить пользователя (только модераторы)"
+					},
+					"response": []
+				},
+				{
+					"name": "Unban User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/moderation/users/:id/unban",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"moderation",
+								"users",
+								":id",
+								"unban"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "user_id_here"
+								}
+							]
+						},
+						"description": "Разбанить пользователя (только модераторы)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "10. Statistics & Analytics",
+			"item": [
+				{
+					"name": "Get User Statistics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/stats/user",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"stats",
+								"user"
+							]
+						},
+						"description": "Получение статистики пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Group Statistics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/stats/groups/{{group_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"stats",
+								"groups",
+								"{{group_id}}"
+							]
+						},
+						"description": "Получение статистики группы"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Platform Statistics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/stats/platform",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"stats",
+								"platform"
+							]
+						},
+						"description": "Общая статистика платформы (только модераторы)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "11. Announcements",
+			"item": [
+				{
+					"name": "Get All Announcements",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements?category=work&limit=20",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "work",
+									"description": "Category: work, help, services, housing, transport"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Получение списка всех объявлений (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Announcement by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "announcement_id_here"
+								}
+							]
+						},
+						"description": "Получение информации об объявлении (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Announcement",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"announcement_id\", jsonData.id);",
+									"    console.log(\"Announcement ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Ищу работу на неполный день\",\n  \"description\": \"Опытный программист ищет работу на неполный рабочий день. Готов работать удаленно или в офисе.\",\n  \"category\": \"work\",\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"city\": \"Новая Каховка\"\n  },\n  \"address\": \"ул. Ленина, 15\",\n  \"employment\": \"partial\",\n  \"contact_info\": [\n    {\n      \"type\": \"phone\",\n      \"value\": \"+380501234567\",\n      \"label\": \"Телефон\"\n    },\n    {\n      \"type\": \"email\",\n      \"value\": \"contact@example.com\",\n      \"label\": \"Email\"\n    }\n  ],\n  \"expires_at\": \"2025-12-31T23:59:59Z\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements"
+							]
+						},
+						"description": "Создание нового объявления"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Announcement",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Ищу работу на неполный день (обновлено)\",\n  \"description\": \"Обновленное описание\",\n  \"is_active\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{announcement_id}}"
+								}
+							]
+						},
+						"description": "Обновление объявления (только автор)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Announcement",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{announcement_id}}"
+								}
+							]
+						},
+						"description": "Удаление объявления (только автор)"
+					},
+					"response": []
+				},
+				{
+					"name": "Approve Announcement (Moderator)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements/:id/approve",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements",
+								":id",
+								"approve"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{announcement_id}}"
+								}
+							]
+						},
+						"description": "Одобрить объявление (только модераторы)"
+					},
+					"response": []
+				},
+				{
+					"name": "Reject Announcement (Moderator)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Нарушение правил размещения объявлений\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/announcements/:id/reject",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"announcements",
+								":id",
+								"reject"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{announcement_id}}"
+								}
+							]
+						},
+						"description": "Отклонить объявление (только модераторы)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "12. Polls",
+			"item": [
+				{
+					"name": "Get All Polls",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls?category=city_planning&limit=20",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "city_planning",
+									"description": "Category: city_planning, transport, infrastructure, social, environment, governance, budget, education, healthcare"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Получение списка всех опросов (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Poll by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "poll_id_here"
+								}
+							]
+						},
+						"description": "Получение информации об опросе (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Poll Results",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls/:id/results",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls",
+								":id",
+								"results"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "poll_id_here"
+								}
+							]
+						},
+						"description": "Получение результатов опроса (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Poll",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"poll_id\", jsonData.id);",
+									"    console.log(\"Poll ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Опитування щодо планування міста\",\n  \"description\": \"Ми збираємо думки мешканців про майбутнє планування міста. Ваша думка важлива!\",\n  \"category\": \"city_planning\",\n  \"questions\": [\n    {\n      \"text\": \"Які напрямки розвитку міста для вас найважливіші?\",\n      \"type\": \"multiple_choice\",\n      \"is_required\": true,\n      \"options\": [\n        {\"text\": \"Транспортна інфраструктура\"},\n        {\"text\": \"Екологія та озеленення\"},\n        {\"text\": \"Освіта та культура\"},\n        {\"text\": \"Спорт та відпочинок\"},\n        {\"text\": \"Житлове будівництво\"}\n      ]\n    },\n    {\n      \"text\": \"Оцініть загальну якість життя в місті (1-10)\",\n      \"type\": \"rating\",\n      \"is_required\": true,\n      \"min_rating\": 1,\n      \"max_rating\": 10\n    }\n  ],\n  \"allow_multiple\": false,\n  \"is_anonymous\": false,\n  \"is_public\": true,\n  \"start_date\": \"2025-01-15T00:00:00Z\",\n  \"end_date\": \"2025-02-15T23:59:59Z\",\n  \"tags\": [\"планування\", \"місто\", \"розвиток\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls"
+							]
+						},
+						"description": "Создание нового опроса"
+					},
+					"response": []
+				},
+				{
+					"name": "Vote in Poll",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"responses\": [\n    {\n      \"question_index\": 0,\n      \"selected_options\": [0, 1, 2],\n      \"text_response\": null,\n      \"rating_value\": null\n    },\n    {\n      \"question_index\": 1,\n      \"selected_options\": null,\n      \"text_response\": null,\n      \"rating_value\": 8\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls/:id/respond",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls",
+								":id",
+								"respond"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{poll_id}}"
+								}
+							]
+						},
+						"description": "Голосование в опросе"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Poll",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Опитування щодо планування міста (обновлено)\",\n  \"description\": \"Обновленное описание\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{poll_id}}"
+								}
+							]
+						},
+						"description": "Обновление опроса (только автор)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Poll",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/polls/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"polls",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{poll_id}}"
+								}
+							]
+						},
+						"description": "Удаление опроса (только автор)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "13. Petitions",
+			"item": [
+				{
+					"name": "Get All Petitions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/petitions?category=infrastructure&status=active&limit=20",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"petitions"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "infrastructure",
+									"description": "Category: infrastructure, social, environment, economy, governance, safety, transport, education, healthcare"
+								},
+								{
+									"key": "status",
+									"value": "active",
+									"description": "Status: draft, active, completed, expired, under_review, accepted, rejected"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Получение списка всех петиций (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Petition by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/petitions/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"petitions",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "petition_id_here"
+								}
+							]
+						},
+						"description": "Получение информации о петиции (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Petition",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"petition_id\", jsonData.id);",
+									"    console.log(\"Petition ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Петиція про ремонт доріг у центрі міста\",\n  \"description\": \"Ми, мешканці міста Нова Каховка, звертаємось до міської влади з проханням про невідкладний ремонт дорожнього покриття на центральних вулицях міста. Поточний стан доріг створює небезпеку для пішоходів та транспорту.\",\n  \"category\": \"infrastructure\",\n  \"required_signatures\": 500,\n  \"demands\": \"1. Ремонт дорожнього покриття на вул. Леніна, вул. Миру, вул. Центральній.\\n2. Установка дорожніх знаків та розмітки.\\n3. Регулярний моніторинг стану доріг.\",\n  \"end_date\": \"2025-06-30T23:59:59Z\",\n  \"tags\": [\"дороги\", \"інфраструктура\", \"безпека\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/petitions",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"petitions"
+							]
+						},
+						"description": "Создание новой петиции"
+					},
+					"response": []
+				},
+				{
+					"name": "Sign Petition",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"comment\": \"Повністю підтримую цю ініціативу. Дороги дійсно потребують ремонту.\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/petitions/:id/sign",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"petitions",
+								":id",
+								"sign"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{petition_id}}"
+								}
+							]
+						},
+						"description": "Подписать петицию"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Petition",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Петиція про ремонт доріг у центрі міста (обновлено)\",\n  \"description\": \"Обновленное описание петиции\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/petitions/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"petitions",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{petition_id}}"
+								}
+							]
+						},
+						"description": "Обновление петиции (только автор)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "14. City Issues",
+			"item": [
+				{
+					"name": "Get All City Issues",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/city-issues?category=road&status=reported&limit=20",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"city-issues"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "road",
+									"description": "Category: road, lighting, water, electricity, waste, transport, building, safety, other"
+								},
+								{
+									"key": "status",
+									"value": "reported",
+									"description": "Status: reported, in_progress, resolved, rejected, duplicate"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Получение списка проблем города (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get City Issue by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/city-issues/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"city-issues",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "city_issue_id_here"
+								}
+							]
+						},
+						"description": "Получение информации о проблеме города (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create City Issue",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set(\"city_issue_id\", jsonData.id);",
+									"    console.log(\"City Issue ID saved:\", jsonData.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Пролом на дорозі\",\n  \"description\": \"На вул. Леніна, біля будинку №25, утворився великий пролом на проїжджій частині. Це створює небезпеку для транспорту та пішоходів.\",\n  \"category\": \"road\",\n  \"priority\": \"high\",\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"city\": \"Нова Каховка\"\n  },\n  \"address\": \"вул. Леніна, 25\",\n  \"photos\": [\"https://example.com/photo1.jpg\", \"https://example.com/photo2.jpg\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/city-issues",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"city-issues"
+							]
+						},
+						"description": "Создание новой проблемы города"
+					},
+					"response": []
+				},
+				{
+					"name": "Upvote City Issue",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/city-issues/:id/upvote",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"city-issues",
+								":id",
+								"upvote"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{city_issue_id}}"
+								}
+							]
+						},
+						"description": "Поддержать проблему (upvote)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update City Issue",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Пролом на дорозі (обновлено)\",\n  \"description\": \"Обновленное описание проблемы\",\n  \"priority\": \"critical\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/city-issues/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"city-issues",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{city_issue_id}}"
+								}
+							]
+						},
+						"description": "Обновление проблемы города (только автор)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "15. Transport",
+			"item": [
+				{
+					"name": "Get All Routes",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/transport/routes",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"transport",
+								"routes"
+							]
+						},
+						"description": "Получение списка маршрутов транспорта (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Route by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/transport/routes/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"transport",
+								"routes",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "route_id_here"
+								}
+							]
+						},
+						"description": "Получение информации о маршруте (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Nearby Stops",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/transport/stops/nearby?lat=46.7545&lng=33.3606&radius=500",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"transport",
+								"stops",
+								"nearby"
+							],
+							"query": [
+								{
+									"key": "lat",
+									"value": "46.7545",
+									"description": "Широта"
+								},
+								{
+									"key": "lng",
+									"value": "33.3606",
+									"description": "Долгота"
+								},
+								{
+									"key": "radius",
+									"value": "500",
+									"description": "Радиус в метрах"
+								}
+							]
+						},
+						"description": "Получение ближайших остановок (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Arrivals",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/transport/arrivals?stop_id=stop123&route_id=route456",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"transport",
+								"arrivals"
+							],
+							"query": [
+								{
+									"key": "stop_id",
+									"value": "stop123"
+								},
+								{
+									"key": "route_id",
+									"value": "route456"
+								}
+							]
+						},
+						"description": "Получение информации о прибытии транспорта (публичный)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Live Tracking",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/transport/live?route_id=route456",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"transport",
+								"live"
+							],
+							"query": [
+								{
+									"key": "route_id",
+									"value": "route456"
+								}
+							]
+						},
+						"description": "Получение информации о местоположении транспорта в реальном времени (публичный)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "16. User Management",
+			"item": [
+				{
+					"name": "Change Password",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"old_password\": \"password123\",\n  \"new_password\": \"newpassword456\",\n  \"confirm_password\": \"newpassword456\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/auth/password",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"auth",
+								"password"
+							]
+						},
+						"description": "Изменение пароля пользователя"
+					},
+					"response": []
+				},
+				{
+					"name": "Register Device Token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"token\": \"device_fcm_token_here\",\n  \"platform\": \"android\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/device-tokens",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"device-tokens"
+							]
+						},
+						"description": "Регистрация device token для push-уведомлений"
+					},
+					"response": []
+				},
+				{
+					"name": "Unregister Device Token",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/device-tokens/:token",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"device-tokens",
+								":token"
+							],
+							"variable": [
+								{
+									"key": "token",
+									"value": "device_fcm_token_here"
+								}
+							]
+						},
+						"description": "Удаление device token"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Notification Preferences",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notification-preferences",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notification-preferences"
+							]
+						},
+						"description": "Получение настроек уведомлений"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Notification Preferences",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email_notifications\": true,\n  \"push_notifications\": true,\n  \"sms_notifications\": false,\n  \"event_reminders\": true,\n  \"group_updates\": true,\n  \"city_issues_updates\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notification-preferences",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notification-preferences"
+							]
+						},
+						"description": "Обновление настроек уведомлений"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Notification Types",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/notification-types",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"notification-types"
+							]
+						},
+						"description": "Получение типов уведомлений (публичный)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "17. Testing Scenarios",
+			"item": [
+				{
+					"name": "Complete User Flow",
+					"item": [
+						{
+							"name": "1. Register",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"email\": \"flowtest@example.com\",\n  \"password\": \"testflow123\",\n  \"first_name\": \"Тестовый\",\n  \"last_name\": \"Пользователь\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/register",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"register"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "2. Login",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"if (pm.response.code === 200) {",
+											"    var jsonData = pm.response.json();",
+											"    pm.collectionVariables.set(\"token\", jsonData.token);",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"email\": \"flowtest@example.com\",\n  \"password\": \"testflow123\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/login",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"login"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "3. Update Profile",
+							"request": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{token}}"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"phone\": \"+380501234567\",\n  \"bio\": \"Новый пользователь eCity\",\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"city\": \"Новая Каховка\"\n  }\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/profile",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"profile"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "4. Join City Group",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{token}}"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/join",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"groups",
+										"{{group_id}}",
+										"join"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "5. Send Message to Group",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{token}}"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"content\": \"Привет всем! Я новый участник группы.\",\n  \"type\": \"text\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/groups/{{group_id}}/messages",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"groups",
+										"{{group_id}}",
+										"messages"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "6. Join Event",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{token}}"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/join",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"{{api_version}}",
+										"events",
+										"{{event_id}}",
+										"join"
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "api_version",
+			"value": "v1",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "user_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "group_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "event_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "announcement_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "poll_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "petition_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "city_issue_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
