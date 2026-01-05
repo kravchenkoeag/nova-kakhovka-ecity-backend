@@ -83,7 +83,13 @@ func (h *PetitionHandler) CreatePetition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	// Проверяем, что дата окончания в будущем
 	if req.EndDate.Before(time.Now().Add(24 * time.Hour)) {
@@ -166,7 +172,13 @@ func (h *PetitionHandler) PublishPetition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -419,7 +431,13 @@ func (h *PetitionHandler) SignPetition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -520,7 +538,13 @@ func (h *PetitionHandler) SignPetition(c *gin.Context) {
 
 func (h *PetitionHandler) GetUserPetitions(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	petitionType := c.DefaultQuery("type", "authored") // authored, signed
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -583,7 +607,13 @@ func (h *PetitionHandler) DeletePetition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -644,7 +674,13 @@ func (h *PetitionHandler) AddOfficialResponse(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

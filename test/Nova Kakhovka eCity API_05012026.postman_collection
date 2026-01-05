@@ -47,19 +47,14 @@
 					"response": []
 				},
 				{
-					"name": "API Info",
+					"name": "API Info (Not Available)",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Response has version\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData).to.have.property('version');",
+									"pm.test(\"Status code is 404 (endpoint does not exist)\", function () {",
+									"    pm.response.to.have.status(404);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -78,7 +73,7 @@
 								"api"
 							]
 						},
-						"description": "Получение информации об API"
+						"description": "Этот endpoint не существует в API. Используйте /health для проверки работоспособности."
 					},
 					"response": []
 				}
@@ -124,13 +119,14 @@
 							"raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\",\n  \"first_name\": \"Иван\",\n  \"last_name\": \"Иванов\"\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/register",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/register",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"register"
 							]
 						},
@@ -182,13 +178,14 @@
 							"raw": "{\n    \"email\": \"moderator@example.com\",\n    \"password\": \"moderator123\"\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/login",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/login",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"login"
 							]
 						},
@@ -211,13 +208,14 @@
 							"raw": "{\n  \"email\": \"moderator@example.com\",\n  \"password\": \"moderator123\",\n  \"first_name\": \"Модератор\",\n  \"last_name\": \"Тестовый\"\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/register",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/register",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"register"
 							]
 						},
@@ -261,13 +259,14 @@
 							}
 						],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/profile",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"profile"
 							]
 						},
@@ -294,13 +293,14 @@
 							"raw": "{\n  \"first_name\": \"Петр\",\n  \"last_name\": \"Петров\",\n  \"phone\": \"+380501234567\",\n  \"bio\": \"Тестовый пользователь eCity\",\n  \"date_of_birth\": \"1990-01-15\"\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/profile",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"profile"
 							]
 						},
@@ -327,13 +327,14 @@
 							"raw": "{\n  \"location\": {\n    \"type\": \"Point\",\n    \"coordinates\": [33.3606, 46.7545],\n    \"country\": \"Украина\",\n    \"region\": \"Херсонская область\",\n    \"city\": \"Новая Каховка\"\n  }\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/profile",
+							"raw": "{{base_url}}/api/{{api_version}}/auth/profile",
 							"host": [
 								"{{base_url}}"
 							],
 							"path": [
 								"api",
 								"{{api_version}}",
+								"auth",
 								"profile"
 							]
 						},
@@ -848,7 +849,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/join",
+							"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/attend",
 							"host": [
 								"{{base_url}}"
 							],
@@ -2947,7 +2948,7 @@
 									}
 								],
 								"url": {
-									"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/join",
+									"raw": "{{base_url}}/api/{{api_version}}/events/{{event_id}}/attend",
 									"host": [
 										"{{base_url}}"
 									],

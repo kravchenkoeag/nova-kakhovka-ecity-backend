@@ -73,7 +73,13 @@ func (h *AnnouncementHandler) CreateAnnouncement(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -315,7 +321,13 @@ func (h *AnnouncementHandler) UpdateAnnouncement(c *gin.Context) {
 
 	// Проверяем права (только автор или модератор)
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 	isModerator, _ := c.Get("is_moderator")
 
 	if announcement.AuthorID != userIDObj && !isModerator.(bool) {
@@ -412,7 +424,13 @@ func (h *AnnouncementHandler) DeleteAnnouncement(c *gin.Context) {
 
 	// Проверяем права
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 	isModerator, _ := c.Get("is_moderator")
 
 	if announcement.AuthorID != userIDObj && !isModerator.(bool) {
@@ -465,7 +483,13 @@ func (h *AnnouncementHandler) ApproveAnnouncement(c *gin.Context) {
 	defer cancel()
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	result, err := h.announcementCollection.UpdateOne(
 		ctx,
@@ -534,7 +558,13 @@ func (h *AnnouncementHandler) RejectAnnouncement(c *gin.Context) {
 	defer cancel()
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	result, err := h.announcementCollection.UpdateOne(
 		ctx,
@@ -574,7 +604,13 @@ func (h *AnnouncementHandler) RejectAnnouncement(c *gin.Context) {
 // GetMyAnnouncements возвращает объявления пользователя
 func (h *AnnouncementHandler) GetMyAnnouncements(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	// Получаем параметры пагинации
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))

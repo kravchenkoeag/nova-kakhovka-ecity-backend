@@ -57,7 +57,13 @@ func NewNotificationHandler(
 
 func (h *NotificationHandler) GetUserNotifications(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -131,7 +137,13 @@ func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -168,7 +180,13 @@ func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
 
 func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -416,7 +434,13 @@ func (h *NotificationHandler) SendTestNotification(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -426,7 +450,7 @@ func (h *NotificationHandler) SendTestNotification(c *gin.Context) {
 		"action": "none",
 	}
 
-	err := h.notificationService.SendNotificationToUser(
+	err = h.notificationService.SendNotificationToUser(
 		ctx,
 		userIDObj,
 		"Тестовое уведомление",
@@ -460,7 +484,13 @@ func (h *NotificationHandler) GetNotifications(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	// Параметри запиту
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -566,7 +596,13 @@ func (h *NotificationHandler) MarkAsRead(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -616,7 +652,13 @@ func (h *NotificationHandler) MarkAllAsRead(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -670,7 +712,13 @@ func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -733,14 +781,20 @@ func (h *NotificationHandler) RegisterDeviceToken(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Перевіряємо чи токен вже існує
 	var existingToken bson.M
-	err := h.deviceTokenCollection.FindOne(ctx, bson.M{
+	err = h.deviceTokenCollection.FindOne(ctx, bson.M{
 		"user_id": userIDObj,
 		"token":   req.Token,
 	}).Decode(&existingToken)
@@ -824,7 +878,13 @@ func (h *NotificationHandler) UnregisterDeviceToken(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -878,14 +938,20 @@ func (h *NotificationHandler) GetPreferences(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Отримуємо користувача з налаштуваннями
 	var user models.User
-	err := h.userCollection.FindOne(ctx, bson.M{"_id": userIDObj}).Decode(&user)
+	err = h.userCollection.FindOne(ctx, bson.M{"_id": userIDObj}).Decode(&user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Error fetching preferences",
@@ -946,7 +1012,13 @@ func (h *NotificationHandler) UpdatePreferences(c *gin.Context) {
 		return
 	}
 
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -992,7 +1064,7 @@ func (h *NotificationHandler) UpdatePreferences(c *gin.Context) {
 	update["updated_at"] = time.Now()
 
 	// Оновлюємо налаштування
-	_, err := h.userCollection.UpdateOne(
+	_, err = h.userCollection.UpdateOne(
 		ctx,
 		bson.M{"_id": userIDObj},
 		bson.M{"$set": update},

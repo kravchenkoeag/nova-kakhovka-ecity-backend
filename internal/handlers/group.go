@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"nova-kakhovka-ecity/internal/models"
@@ -57,7 +58,13 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	now := time.Now()
 	group := models.Group{
@@ -105,7 +112,13 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 
 func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -178,7 +191,13 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -266,7 +285,13 @@ func (h *GroupHandler) SendMessage(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -328,7 +353,13 @@ func (h *GroupHandler) GetMessages(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -419,7 +450,13 @@ func (h *GroupHandler) GetGroup(c *gin.Context) {
 
 	// Перевіряємо чи користувач є членом групи (для приватних груп)
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	if !group.IsPublic {
 		isMember := false
@@ -479,7 +516,13 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	if group.CreatorID != userIDObj {
 		c.JSON(http.StatusForbidden, gin.H{
@@ -544,7 +587,13 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	if group.CreatorID != userIDObj {
 		c.JSON(http.StatusForbidden, gin.H{
@@ -581,7 +630,13 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -623,5 +678,105 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Successfully left the group",
+	})
+}
+
+// SearchGroups выполняет поиск групп по тексту и типу
+func (h *GroupHandler) SearchGroups(c *gin.Context) {
+	query := c.Query("q")
+	groupType := c.Query("type")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"is_public": true,
+	}
+
+	// Текстовый поиск по названию и описанию
+	if query != "" {
+		filter["$or"] = []bson.M{
+			{"name": bson.M{"$regex": query, "$options": "i"}},
+			{"description": bson.M{"$regex": query, "$options": "i"}},
+		}
+	}
+
+	// Фильтр по типу
+	if groupType != "" {
+		filter["type"] = groupType
+	}
+
+	opts := options.Find().
+		SetLimit(int64(limit)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := h.groupCollection.Find(ctx, filter, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error searching groups",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var groups []models.Group
+	if err := cursor.All(ctx, &groups); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding groups",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"groups": groups,
+		"count":  len(groups),
+	})
+}
+
+// GetGroupStats возвращает статистику группы
+func (h *GroupHandler) GetGroupStats(c *gin.Context) {
+	groupID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid group ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Проверяем существование группы
+	var group models.Group
+	err = h.groupCollection.FindOne(ctx, bson.M{"_id": groupID}).Decode(&group)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Group not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database error",
+		})
+		return
+	}
+
+	// Подсчитываем количество сообщений
+	messageCount, _ := h.messageCollection.CountDocuments(ctx, bson.M{"group_id": groupID})
+
+	c.JSON(http.StatusOK, gin.H{
+		"group_id":      groupID,
+		"name":          group.Name,
+		"member_count":  len(group.Members),
+		"message_count": messageCount,
+		"created_at":    group.CreatedAt,
+		"type":          group.Type,
+		"is_public":     group.IsPublic,
 	})
 }

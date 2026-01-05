@@ -75,7 +75,13 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	// Проверяем, что дата начала не в прошлом
 	if req.StartDate.Before(time.Now()) {
@@ -329,7 +335,13 @@ func (h *EventHandler) GetEvent(c *gin.Context) {
 
 func (h *EventHandler) GetUserEvents(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	eventType := c.DefaultQuery("type", "organized") // organized, participating, all
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -408,7 +420,13 @@ func (h *EventHandler) UpdateEvent(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -501,7 +519,13 @@ func (h *EventHandler) DeleteEvent(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -542,7 +566,13 @@ func (h *EventHandler) JoinEvent(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -620,7 +650,13 @@ func (h *EventHandler) LeaveEvent(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	userIDObj := userID.(primitive.ObjectID)
+	userIDObj, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -934,5 +970,176 @@ func (h *EventHandler) GetContentStats(c *gin.Context) {
 		"events_by_status": eventStats,
 		"popular_events":   popularEvents,
 		"timestamp":        time.Now(),
+	})
+}
+
+// GetNearbyEvents возвращает события поблизости от указанных координат
+func (h *EventHandler) GetNearbyEvents(c *gin.Context) {
+	lat := c.Query("lat")
+	lng := c.Query("lng")
+	radiusStr := c.DefaultQuery("radius", "5000") // радиус в метрах
+
+	if lat == "" || lng == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Latitude and longitude are required",
+		})
+		return
+	}
+
+	latitude, err := strconv.ParseFloat(lat, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid latitude",
+		})
+		return
+	}
+
+	longitude, err := strconv.ParseFloat(lng, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid longitude",
+		})
+		return
+	}
+
+	radius, err := strconv.ParseFloat(radiusStr, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid radius",
+		})
+		return
+	}
+
+	// Конвертируем радиус из метров (по умолчанию предполагаем, что радиус в метрах)
+	radiusMeters := radius
+	if radius > 1000 {
+		// Если радиус очень большой, возможно он в километрах
+		radiusMeters = radius
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Используем гео-запрос MongoDB для поиска событий поблизости
+	cursor, err := h.eventCollection.Find(ctx, bson.M{
+		"location": bson.M{
+			"$near": bson.M{
+				"$geometry": bson.M{
+					"type":        "Point",
+					"coordinates": []float64{longitude, latitude},
+				},
+				"$maxDistance": radiusMeters,
+			},
+		},
+		"is_public": true,
+		"start_date": bson.M{"$gte": time.Now()}, // Только будущие события
+	}, options.Find().SetLimit(50).SetSort(bson.D{{Key: "start_date", Value: 1}}))
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error fetching nearby events",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var events []models.Event
+	if err := cursor.All(ctx, &events); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding events",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"events": events,
+		"count":  len(events),
+		"location": gin.H{
+			"lat":    latitude,
+			"lng":    longitude,
+			"radius": radiusMeters,
+		},
+	})
+}
+
+// SearchEvents выполняет поиск событий по тексту и другим параметрам
+func (h *EventHandler) SearchEvents(c *gin.Context) {
+	query := c.Query("q")
+	category := c.Query("category")
+	dateFromStr := c.Query("date_from")
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"is_public": true,
+	}
+
+	// Текстовый поиск по названию и описанию
+	if query != "" {
+		filter["$or"] = []bson.M{
+			{"title": bson.M{"$regex": query, "$options": "i"}},
+			{"description": bson.M{"$regex": query, "$options": "i"}},
+		}
+	}
+
+	// Фильтр по категории
+	if category != "" {
+		filter["category"] = category
+	}
+
+	// Фильтр по дате
+	if dateFromStr != "" {
+		dateFrom, err := time.Parse("2006-01-02", dateFromStr)
+		if err == nil {
+			filter["start_date"] = bson.M{"$gte": dateFrom}
+		}
+	} else {
+		// По умолчанию только будущие события
+		filter["start_date"] = bson.M{"$gte": time.Now()}
+	}
+
+	skip := (page - 1) * limit
+	opts := options.Find().
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip)).
+		SetSort(bson.D{{Key: "start_date", Value: 1}})
+
+	cursor, err := h.eventCollection.Find(ctx, filter, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error searching events",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var events []models.Event
+	if err := cursor.All(ctx, &events); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding events",
+		})
+		return
+	}
+
+	total, _ := h.eventCollection.CountDocuments(ctx, filter)
+	totalPages := (int(total) + limit - 1) / limit
+
+	c.JSON(http.StatusOK, gin.H{
+		"events":      events,
+		"total":       total,
+		"page":        page,
+		"limit":       limit,
+		"total_pages": totalPages,
 	})
 }

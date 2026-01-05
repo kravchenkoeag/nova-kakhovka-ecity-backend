@@ -118,9 +118,14 @@ func getUserID(c *gin.Context) (primitive.ObjectID, error) {
 		return primitive.NilObjectID, fmt.Errorf("user_id not found in context")
 	}
 
-	userIDObj, ok := userID.(primitive.ObjectID)
+	userIDStr, ok := userID.(string)
 	if !ok {
 		return primitive.NilObjectID, fmt.Errorf("invalid user_id type")
+	}
+
+	userIDObj, err := primitive.ObjectIDFromHex(userIDStr)
+	if err != nil {
+		return primitive.NilObjectID, fmt.Errorf("invalid user_id format: %v", err)
 	}
 
 	return userIDObj, nil

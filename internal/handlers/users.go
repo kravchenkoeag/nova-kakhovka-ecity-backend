@@ -749,3 +749,150 @@ func (h *UsersHandler) GetUserStats(c *gin.Context) {
 		"timestamp":            time.Now(),
 	})
 }
+
+// SearchUsers выполняет поиск пользователей (упрощенная версия для публичного использования)
+func (h *UsersHandler) SearchUsers(c *gin.Context) {
+	query := c.Query("q")
+	limitStr := c.DefaultQuery("limit", "20")
+
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := bson.M{}
+
+	// Текстовый поиск по email, имени и фамилии
+	if query != "" {
+		filter["$or"] = []bson.M{
+			{"email": bson.M{"$regex": query, "$options": "i"}},
+			{"first_name": bson.M{"$regex": query, "$options": "i"}},
+			{"last_name": bson.M{"$regex": query, "$options": "i"}},
+		}
+	}
+
+	opts := options.Find().
+		SetLimit(int64(limit)).
+		SetProjection(bson.M{"password_hash": 0}). // Исключаем пароль
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := h.userCollection.Find(ctx, filter, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error searching users",
+		})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var users []models.User
+	if err := cursor.All(ctx, &users); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error decoding users",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"users": users,
+		"count": len(users),
+	})
+}
+
+// BanUser блокирует пользователя (для модераторов, упрощенная версия)
+func (h *UsersHandler) BanUser(c *gin.Context) {
+	userID := c.Param("id")
+	objectID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Блокируем пользователя
+	update := bson.M{
+		"is_blocked":  true,
+		"blocked_at":  time.Now(),
+		"updated_at":  time.Now(),
+	}
+
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": objectID},
+		bson.M{"$set": update},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to ban user",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User banned successfully",
+		"user_id": userID,
+	})
+}
+
+// UnbanUser разблокирует пользователя (для модераторов, упрощенная версия)
+func (h *UsersHandler) UnbanUser(c *gin.Context) {
+	userID := c.Param("id")
+	objectID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid user ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Разблокируем пользователя
+	update := bson.M{
+		"is_blocked":   false,
+		"block_reason": "",
+		"blocked_at":   nil,
+		"updated_at":   time.Now(),
+	}
+
+	result, err := h.userCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": objectID},
+		bson.M{"$set": update},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to unban user",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "User not found",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User unbanned successfully",
+		"user_id": userID,
+	})
+}

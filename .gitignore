@@ -41,3 +41,4 @@ logs/
 # Dependencies
 vendor/
 ```
+node_modules

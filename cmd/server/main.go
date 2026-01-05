@@ -266,6 +266,7 @@ func main() {
 		// ===== ПУБЛІЧНА ІНФОРМАЦІЯ =====
 		// Групи
 		api.GET("/groups/public", groupHandler.GetPublicGroups)
+		api.GET("/search/groups", groupHandler.SearchGroups)
 
 		// Оголошення
 		api.GET("/announcements", announcementHandler.GetAnnouncements)
@@ -274,6 +275,8 @@ func main() {
 		// Події
 		api.GET("/events", eventHandler.GetEvents)
 		api.GET("/events/:id", eventHandler.GetEvent)
+		api.GET("/events/nearby", eventHandler.GetNearbyEvents)
+		api.GET("/search/events", eventHandler.SearchEvents)
 
 		// Петиції
 		api.GET("/petitions", petitionHandler.GetPetitions)
@@ -333,6 +336,7 @@ func main() {
 		protected.PUT("/events/:id", eventHandler.UpdateEvent)
 		protected.DELETE("/events/:id", eventHandler.DeleteEvent)
 		protected.POST("/events/:id/attend", eventHandler.AttendEvent)
+		protected.POST("/events/:id/leave", eventHandler.LeaveEvent)
 
 		// ===== ПЕТИЦІЇ =====
 		protected.POST("/petitions", petitionHandler.CreatePetition)
@@ -368,6 +372,13 @@ func main() {
 		// Налаштування сповіщень
 		protected.GET("/notification-preferences", notificationHandler.GetPreferences)
 		protected.PUT("/notification-preferences", notificationHandler.UpdatePreferences)
+
+		// ===== ПОШУК =====
+		protected.GET("/search/users", usersHandler.SearchUsers)
+
+		// ===== СТАТИСТИКА =====
+		protected.GET("/stats/user", usersHandler.GetUserStats)
+		protected.GET("/stats/groups/:id", groupHandler.GetGroupStats)
 	}
 
 	// ========================================
@@ -380,6 +391,15 @@ func main() {
 		// Модерація оголошень
 		moderator.PUT("/announcements/:id/approve", announcementHandler.ApproveAnnouncement)
 		moderator.PUT("/announcements/:id/reject", announcementHandler.RejectAnnouncement)
+
+		// Модерація постів (оголошень)
+		moderator.GET("/moderation/posts/pending", announcementHandler.GetPendingAnnouncements)
+		moderator.POST("/moderation/posts/:id/approve", announcementHandler.ApproveAnnouncement)
+		moderator.POST("/moderation/posts/:id/reject", announcementHandler.RejectAnnouncement)
+
+		// Управління користувачами
+		moderator.POST("/moderation/users/:id/ban", usersHandler.BanUser)
+		moderator.POST("/moderation/users/:id/unban", usersHandler.UnbanUser)
 
 		// Управління подіями
 		moderator.PUT("/events/:id/moderate", eventHandler.ModerateEvent)
@@ -394,6 +414,9 @@ func main() {
 
 		// Модерація петицій
 		moderator.PUT("/petitions/:id/status", petitionHandler.UpdatePetition)
+
+		// Статистика платформи
+		moderator.GET("/stats/platform", eventHandler.GetContentStats)
 	}
 
 	// ========================================
