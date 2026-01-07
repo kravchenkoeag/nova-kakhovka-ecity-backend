@@ -47,6 +47,10 @@ type OfficialResponseRequest struct {
 	Documents  []string `json:"documents,omitempty"`
 }
 
+type UpdateStatusRequest struct {
+	Status string `json:"status" validate:"required,oneof=draft active completed expired under_review accepted rejected"`
+}
+
 type PetitionFilters struct {
 	Category      string    `form:"category"`
 	Status        string    `form:"status"`
@@ -229,6 +233,97 @@ func (h *PetitionHandler) PublishPetition(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Petition published successfully",
+	})
+}
+
+// UpdatePetitionStatus - оновлення статусу петиції (тільки для модераторів)
+func (h *PetitionHandler) UpdatePetitionStatus(c *gin.Context) {
+	petitionID := c.Param("id")
+	petitionIDObj, err := primitive.ObjectIDFromHex(petitionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid petition ID",
+		})
+		return
+	}
+
+	// Перевіряємо права модератора
+	isModerator, exists := c.Get("is_moderator")
+	if !exists || !isModerator.(bool) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only moderators can update petition status",
+		})
+		return
+	}
+
+	var req UpdateStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Перевіряємо, чи петиція існує
+	var petition models.Petition
+	err = h.petitionCollection.FindOne(ctx, bson.M{"_id": petitionIDObj}).Decode(&petition)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Petition not found",
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Database error",
+			})
+		}
+		return
+	}
+
+	// Оновлюємо статус
+	now := time.Now()
+	updateData := bson.M{
+		"status":     req.Status,
+		"updated_at": now,
+	}
+
+	// Якщо змінюється на completed, встановлюємо completed_at
+	if req.Status == models.PetitionStatusCompleted && petition.Status != models.PetitionStatusCompleted {
+		updateData["completed_at"] = now
+	}
+
+	result, err := h.petitionCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": petitionIDObj},
+		bson.M{"$set": updateData},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Error updating petition status",
+		})
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Petition not found",
+		})
+		return
+	}
+
+	// Надсилаємо сповіщення автору про зміну статусу
+	if h.notificationService != nil {
+		// TODO: Реалізувати сповіщення
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Petition status updated successfully",
+		"status":  req.Status,
 	})
 }
 

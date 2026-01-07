@@ -16,6 +16,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"nova-kakhovka-ecity/internal/models"
 	"os"
 	"os/signal"
 	"syscall"
@@ -340,8 +341,11 @@ func main() {
 
 		// ===== ПЕТИЦІЇ =====
 		protected.POST("/petitions", petitionHandler.CreatePetition)
+		protected.POST("/petitions/:id/publish", petitionHandler.PublishPetition)
+		protected.PUT("/petitions/:id/status", petitionHandler.UpdatePetitionStatus)
 		protected.POST("/petitions/:id/sign", petitionHandler.SignPetition)
 		protected.PUT("/petitions/:id", petitionHandler.UpdatePetition)
+		protected.DELETE("/petitions/:id", petitionHandler.DeletePetition)
 
 		// ===== ОПИТУВАННЯ =====
 		// ✅ Створення опитування з rate limiting (5 хвилин між створенням)
@@ -386,10 +390,12 @@ func main() {
 	// ========================================
 	moderator := api.Group("")
 	moderator.Use(middleware.AuthMiddleware(jwtManager))
-	moderator.Use(middleware.RequireRole("MODERATOR"))
+	moderator.Use(middleware.RequireMinimumRole(string(models.RoleModerator)))
 	{
 		// Модерація оголошень
-		moderator.PUT("/announcements/:id/approve", announcementHandler.ApproveAnnouncement)
+		moderator.PUT("/announcements/:id/approve",
+			middleware.RequirePermission(string(models.PermissionModerateAnnouncement)),
+			announcementHandler.ApproveAnnouncement)
 		moderator.PUT("/announcements/:id/reject", announcementHandler.RejectAnnouncement)
 
 		// Модерація постів (оголошень)
@@ -424,13 +430,15 @@ func main() {
 	// ========================================
 	admin := api.Group("")
 	admin.Use(middleware.AuthMiddleware(jwtManager))
-	admin.Use(middleware.RequireRole("ADMIN"))
+	admin.Use(middleware.RequireMinimumRole(string(models.RoleAdmin)))
 	{
 		// ===== УПРАВЛІННЯ КОРИСТУВАЧАМИ =====
 		admin.GET("/users", usersHandler.GetAllUsers)
 		admin.GET("/users/:id", usersHandler.GetUser)
 		admin.PUT("/users/:id", usersHandler.UpdateUser)
-		admin.DELETE("/users/:id", usersHandler.DeleteUser)
+		admin.DELETE("/users/:id",
+			middleware.RequirePermission(string(models.PermissionManageUsers)),
+			usersHandler.DeleteUser)
 		admin.PUT("/users/:id/block", usersHandler.BlockUser)
 		admin.PUT("/users/:id/unblock", usersHandler.UnblockUser)
 		admin.PUT("/users/:id/verify", usersHandler.VerifyUser)
@@ -444,7 +452,9 @@ func main() {
 		admin.POST("/notifications/emergency", notificationHandler.SendEmergencyNotification)
 
 		// ===== УПРАВЛІННЯ ТРАНСПОРТОМ =====
-		admin.POST("/transport/routes", transportHandler.CreateRoute)
+		admin.POST("/transport/routes",
+			middleware.RequirePermission(string(models.PermissionManageTransport)),
+			transportHandler.CreateRoute)
 		admin.PUT("/transport/routes/:id", transportHandler.UpdateRoute)
 		admin.DELETE("/transport/routes/:id", transportHandler.DeleteRoute)
 
@@ -454,7 +464,9 @@ func main() {
 
 		// ===== АНАЛІТИКА =====
 		// Статистика використання платформи
-		admin.GET("/analytics/users", usersHandler.GetUserStats)
+		admin.GET("/analytics/users",
+			middleware.RequirePermission(string(models.PermissionViewAnalytics)),
+			usersHandler.GetUserStats)
 		admin.GET("/analytics/content", eventHandler.GetContentStats)
 		admin.GET("/analytics/polls", pollHandler.GetPollStats)
 	}
