@@ -357,7 +357,8 @@ func (h *PetitionHandler) GetPetitions(c *gin.Context) {
 	totalPages := (totalCount + int64(filters.Limit) - 1) / int64(filters.Limit)
 
 	c.JSON(http.StatusOK, gin.H{
-		"petitions": petitions,
+		//"petitions": petitions,
+		"data": petitions,
 		"pagination": gin.H{
 			"page":        filters.Page,
 			"limit":       filters.Limit,
